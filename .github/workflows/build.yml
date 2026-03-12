@@ -39,7 +39,7 @@ jobs:
       run: flutter config --enable-web
 
     - name: 🎯 Create web platform files
-      run: flutter create . --platforms=web --no-overwrite  # ← tsy manimba pubspec.yaml
+      run: flutter create . --platforms=web --no-overwrite --project-name kintana_vip
 
     - name: 📦 Get dependencies
       run: flutter pub get
