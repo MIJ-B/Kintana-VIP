@@ -488,7 +488,6 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                     mouseY: _mouseY,
                     joropredictActive: s.joropredictActive,
                     hitAreas: _hitAreas,
-                    activeJPIdx: _activeJPIdx,
                   ),
                   child: Container(),
                 ),
