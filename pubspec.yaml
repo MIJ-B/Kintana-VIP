@@ -1,4 +1,4 @@
-name: kintana
+name: kintana_vip
 description: KINTANA — VIP Trading App with JORO AI & JOROpredict
 publish_to: 'none'
 version: 4.0.0+1
@@ -9,25 +9,14 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
-  # WebSocket & HTTP
   web_socket_channel: ^2.4.0
   http: ^1.1.0
-  
-  # Storage
   shared_preferences: ^2.2.2
-  
-  # Chart (custom candlestick via CustomPainter — no external chart lib needed)
-  
-  # UI
+  provider: ^6.1.0
   google_fonts: ^6.1.0
   flutter_animate: ^4.3.0
-  
-  # Utils
   intl: ^0.18.1
   uuid: ^4.2.1
-  
-  # Notifications
   flutter_local_notifications: ^16.3.0
   permission_handler: ^11.1.0
   vibration: ^1.8.4
