@@ -471,7 +471,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
             },
             onTapUp: (d) => _onChartTap(d.localPosition, s, candles),
             child: MouseRegion(
-              cursor: SystemMouseCursors.crosshair,
+              cursor: SystemMouseCursors.precise,
               onHover: (e) {
                 setState(() { _mouseX = e.localPosition.dx; _mouseY = e.localPosition.dy; });
               },
