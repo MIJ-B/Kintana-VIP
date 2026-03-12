@@ -270,7 +270,7 @@ class MarketState extends ChangeNotifier {
     if (c.isEmpty) return;
     clampView(c);
     final pivotCandle = offset + pivotScreenFraction * zoom;
-    final newZoom = (zoom / factor).clamp(5, c.length.toDouble());
+    final newZoom = (zoom / factor).clamp(5.0, c.length.toDouble()) as double;
     offset = pivotCandle - pivotScreenFraction * newZoom;
     zoom = newZoom;
     clampView(c);
