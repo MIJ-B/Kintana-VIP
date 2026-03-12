@@ -4,10 +4,9 @@ import '../models/models.dart';
 import '../services/market_state.dart';
 import '../theme/kintana_theme.dart';
 
-// ── Hit area for JOROpredict signals
+// Hit area pour les signals JP
 class JPHitArea {
-  final double cx, cy;
-  final double radius;
+  final double cx, cy, radius;
   final int sigIdx;
   const JPHitArea({required this.cx, required this.cy, required this.radius, required this.sigIdx});
 }
@@ -22,13 +21,11 @@ class CandleChartPainter extends CustomPainter {
   final double? mouseY;
   final bool joropredictActive;
   final List<JPHitArea> hitAreas;
-  final int? activeJPIdx;
 
-  // Layout padding
-  static const double padTop = 10;
-  static const double padRight = 66;
+  static const double padTop    = 10;
+  static const double padRight  = 66;
   static const double padBottom = 30;
-  static const double padLeft = 4;
+  static const double padLeft   = 4;
 
   CandleChartPainter({
     required this.state,
@@ -40,12 +37,9 @@ class CandleChartPainter extends CustomPainter {
     this.mouseY,
     required this.joropredictActive,
     required this.hitAreas,
-    this.activeJPIdx,
   });
 
-  // Price formatting
-  static String fmt(double? p) => fp(p);
-
+  // ── p2y / y2p — exact copy from HTML
   double p2y(double price, double mn, double mx, double H) {
     final r = mx - mn == 0 ? 1.0 : mx - mn;
     return padTop + (1 - (price - mn) / r) * (H - padTop - padBottom);
@@ -62,33 +56,27 @@ class CandleChartPainter extends CustomPainter {
     final H = size.height;
 
     // ── Background gradient
-    final bgPaint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [KintanaTheme.bg, Color(0xFF050812)],
-      ).createShader(Rect.fromLTWH(0, 0, W, H));
-    canvas.drawRect(Rect.fromLTWH(0, 0, W, H), bgPaint);
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, W, H),
+      Paint()..shader = const LinearGradient(
+        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+        colors: [Color(0xFF03050E), Color(0xFF050812)],
+      ).createShader(Rect.fromLTWH(0, 0, W, H)),
+    );
 
-    if (candles.isEmpty) {
-      _drawEmptyText(canvas, size);
-      return;
-    }
+    if (candles.isEmpty) { _drawEmptyText(canvas, size); return; }
 
     // ── Visible range
-    final s = offset.round().clamp(0, candles.length - 1);
-    final e = min(candles.length - 1, s + zoom.round() - 1);
-    final visCandles = candles.sublist(s, e + 1);
+    final s    = offset.round().clamp(0, candles.length - 1);
+    final e    = min(candles.length - 1, s + zoom.round() - 1);
+    final vis  = candles.sublist(s, e + 1);
     final totalSlots = zoom.round();
 
     // ── Price range
-    double mn = visCandles.map((c) => c.low).reduce(min);
-    double mx = visCandles.map((c) => c.high).reduce(max);
+    double mn = vis.map((c) => c.low).reduce(min);
+    double mx = vis.map((c) => c.high).reduce(max);
     final pad = (mx - mn) * 0.07;
-    mn -= pad;
-    mx += pad;
-
-    // Apply Y offset (vertical pan)
+    mn -= pad; mx += pad;
     if (yOffset != 0) {
       final range = mx - mn;
       mn += range * yOffset;
@@ -96,28 +84,21 @@ class CandleChartPainter extends CustomPainter {
     }
 
     final cW = (W - padLeft - padRight) / totalSlots;
-    final bW = cW * 0.7;
+    final bW = max(1.0, min(cW * 0.7, 32.0));
 
-    // ── Grid lines
     _drawGrid(canvas, W, H, mn, mx);
-
-    // ── Volume bars
-    _drawVolume(canvas, W, H, s, visCandles, cW);
-
-    // ── Candles
-    _drawCandles(canvas, H, s, e, visCandles, cW, bW, mn, mx);
-
-    // ── Trade lines
+    _drawVolume(canvas, W, H, vis, cW);
+    _drawCandles(canvas, H, vis, cW, bW, mn, mx);
     _drawTradeLines(canvas, W, H, mn, mx);
 
-    // ── JOROpredict signals
+    // ── JOROpredict — exact copy from HTML drawGainzSignals()
     if (joropredictActive) {
-      _drawJPSignals(canvas, W, H, s, e, cW, mn, mx, totalSlots);
+      _drawGainzSignals(canvas, W, H, s, e, vis, cW, mn, mx);
     }
 
     // ── Live price line
     if (!state.isReplay && state.price != null) {
-      _drawLivePriceLine(canvas, W, H, mn, mx, cW, s, visCandles.length);
+      _drawLivePriceLine(canvas, W, H, mn, mx, cW, s, vis.length);
     }
 
     // ── Replay cursor
@@ -125,153 +106,263 @@ class CandleChartPainter extends CustomPainter {
       _drawReplayCursor(canvas, W, H, s, cW, totalSlots);
     }
 
-    // ── Y-axis labels
     _drawYAxis(canvas, W, H, mn, mx);
+    _drawXAxis(canvas, W, H, vis, cW);
 
-    // ── X-axis labels
-    _drawXAxis(canvas, W, H, s, e, visCandles, cW);
-
-    // ── Crosshair
     if (mouseX != null && mouseY != null) {
       _drawCrosshair(canvas, W, H, mn, mx);
     }
   }
 
+  // ─────────────────────────────────────────────────────────
+  // ── drawGainzSignals — EXACT COPY from HTML drawGainzSignals()
+  // ─────────────────────────────────────────────────────────
+  void _drawGainzSignals(Canvas canvas, double W, double H, int s, int e,
+      List<Candle> vis, double cW, double mn, double mx) {
+    hitAreas.clear();
+
+    final cL = padLeft;
+    final cR = W - padRight;
+
+    for (final ph in state.jpPhases) {
+      final acc      = ph.acc;
+      final manipIdx = ph.manipIdx;
+      final manipDir = ph.manipDir;
+      final distDir  = ph.distDir;
+      final isBull   = distDir == 'up'; // vraie direction après manipulation
+
+      // ── Phase 1: ACCUMULATION zone (violet) — exact copy
+      final xS  = cL + (acc.startIdx - s + 0.5) * cW;
+      final xE  = cL + (acc.endIdx   - s + 0.5) * cW;
+      final zy1 = p2y(acc.high, mn, mx, H);
+      final zy2 = p2y(acc.low,  mn, mx, H);
+
+      if (xE > cL && xS < cR && zy2 > padTop && zy1 < H - padBottom) {
+        final dx2 = max(cL, xS);
+        final dw  = min(cR, xE) - dx2;
+        if (dw > 0) {
+          // Fill
+          canvas.drawRect(
+            Rect.fromLTWH(dx2, zy1, dw, zy2 - zy1),
+            Paint()..color = const Color(0x1A9B72E6),
+          );
+          // Dashed border
+          _dashRect(canvas, Rect.fromLTWH(dx2, zy1, dw, zy2 - zy1),
+              const Color(0x739B72E6), 0.7, dash: 3, gap: 3);
+        }
+        // 'ACC' label
+        _drawSmallText(canvas, 'ACC',
+            Offset(max(cL + 2, xS + 2), zy1 - 8),
+            const Color(0xD99B72E6), bold: true, size: 6.5);
+      }
+
+      // ── Phase 2 + Signal: MANIPULATION candle — exact copy
+      final mLocal = manipIdx - s;
+      if (mLocal >= 0 && mLocal < vis.length) {
+        final mc   = vis[mLocal];
+        final mx2c = cL + (mLocal + 0.5) * cW;
+        final mHy  = p2y(mc.high, mn, mx, H);
+        final mLy  = p2y(mc.low,  mn, mx, H);
+        final col  = isBull ? KintanaTheme.green : KintanaTheme.red;
+
+        // Highlight du wick de manipulation (ligne épaisse colorée + glow)
+        final wickPaint = Paint()
+          ..color = col
+          ..strokeWidth = 3
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+        if (manipDir == 'up') {
+          final bodyTop = p2y(max(mc.open, mc.close), mn, mx, H);
+          canvas.drawLine(Offset(mx2c, bodyTop), Offset(mx2c, mHy), wickPaint);
+        } else {
+          final bodyBot = p2y(min(mc.open, mc.close), mn, mx, H);
+          canvas.drawLine(Offset(mx2c, bodyBot), Offset(mx2c, mLy), wickPaint);
+        }
+
+        // Cercle entry point sur le wick extrême
+        final entryY = manipDir == 'up' ? mHy : mLy;
+        canvas.drawCircle(
+          Offset(mx2c, entryY), 5,
+          Paint()..color = col..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        );
+        canvas.drawCircle(Offset(mx2c, entryY), 5, Paint()..color = col);
+
+        // Arrow signal — exact copy
+        final arrowY = isBull ? mLy + 22 : mHy - 22;
+        final arrowPath = Path();
+        if (isBull) {
+          arrowPath.moveTo(mx2c,      arrowY - 13);
+          arrowPath.lineTo(mx2c - 9,  arrowY + 2);
+          arrowPath.lineTo(mx2c + 9,  arrowY + 2);
+        } else {
+          arrowPath.moveTo(mx2c,      arrowY + 13);
+          arrowPath.lineTo(mx2c - 9,  arrowY - 2);
+          arrowPath.lineTo(mx2c + 9,  arrowY - 2);
+        }
+        arrowPath.close();
+        canvas.drawPath(arrowPath,
+            Paint()..color = col.withOpacity(0.5)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+        canvas.drawPath(arrowPath, Paint()..color = col);
+
+        // Badge label — exact copy
+        final lbl  = isBull ? '▲ BUY' : '▼ SELL';
+        final ly   = isBull ? arrowY + 4 : arrowY - 17;
+        final tp   = _measureText(lbl, 8, bold: true);
+        final tw   = tp + 12;
+        // Pill background
+        final rect = RRect.fromRectAndRadius(
+            Rect.fromLTWH(mx2c - tw / 2, ly, tw, 13), const Radius.circular(4));
+        canvas.drawRRect(rect, Paint()..color = col.withOpacity(0.2));
+        canvas.drawRRect(rect, Paint()..color = col..style = PaintingStyle.stroke..strokeWidth = 1);
+        _drawSmallText(canvas, lbl, Offset(mx2c - tw / 2 + 6, ly + 2), col, bold: true, size: 8, center: true, width: tw);
+
+        // Sub-label 'MAN' — exact copy
+        _drawSmallText(canvas, 'MAN',
+            Offset(mx2c - 10, isBull ? ly + 15 : ly - 9),
+            col.withOpacity(0.7), size: 6);
+
+        // Active signal highlight ring
+        final sig = state.jpSignals.where((sg) => sg.idx == manipIdx).firstOrNull;
+        if (sig != null) {
+          if (state.activeJPSig != null && state.activeJPSig!.idx == sig.idx) {
+            canvas.drawCircle(
+              Offset(mx2c, arrowY), 18,
+              Paint()..color = col.withOpacity(0.4)..style = PaintingStyle.stroke..strokeWidth = 1.5,
+            );
+          }
+          hitAreas.add(JPHitArea(cx: mx2c, cy: arrowY, radius: 24, sigIdx: sig.idx));
+        }
+      }
+    }
+
+    // ── TP/SL lines pour le signal actif — exact copy from HTML
+    if (state.jpAutoTPSL && state.activeJPSig != null) {
+      final atr   = state.calcATR();
+      final sig   = state.activeJPSig!;
+      final isBuy = sig.type == 'BUY';
+      final entry = sig.price;
+      final tp2   = isBuy ? entry + atr * state.jpTPAtr : entry - atr * state.jpTPAtr;
+      final sl2   = isBuy ? entry - atr * state.jpSLAtr : entry + atr * state.jpSLAtr;
+
+      final localIdx = sig.idx - s;
+      final startX = (localIdx >= 0 && localIdx < vis.length)
+          ? cL + (localIdx + 0.5) * cW
+          : cL;
+
+      // Entry line
+      _dashLine(canvas,
+        Paint()..color = Colors.white.withOpacity(0.35)..strokeWidth = 0.8,
+        Offset(startX, p2y(entry, mn, mx, H)),
+        Offset(cR,     p2y(entry, mn, mx, H)),
+        dash: 3, gap: 4,
+      );
+
+      // TP line
+      final tpY = p2y(tp2, mn, mx, H);
+      if (tpY > padTop && tpY < H - padBottom) {
+        _dashLine(canvas,
+          Paint()..color = KintanaTheme.yellow..strokeWidth = 1.2
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+          Offset(startX, tpY), Offset(cR, tpY), dash: 6, gap: 4,
+        );
+        canvas.drawRect(Rect.fromLTWH(cR - 42, tpY - 9, 42, 14),
+            Paint()..color = const Color(0xF00D1020));
+        _drawSmallText(canvas, 'TP ${fp(tp2)}', Offset(cR - 38, tpY - 4),
+            KintanaTheme.yellow, bold: true, size: 7);
+      }
+
+      // SL line
+      final slY = p2y(sl2, mn, mx, H);
+      if (slY > padTop && slY < H - padBottom) {
+        _dashLine(canvas,
+          Paint()..color = KintanaTheme.red..strokeWidth = 1.2
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+          Offset(startX, slY), Offset(cR, slY), dash: 6, gap: 4,
+        );
+        canvas.drawRect(Rect.fromLTWH(cR - 42, slY - 9, 42, 14),
+            Paint()..color = const Color(0xF00D1020));
+        _drawSmallText(canvas, 'SL ${fp(sl2)}', Offset(cR - 38, slY - 4),
+            KintanaTheme.red, bold: true, size: 7);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ── Rest of chart drawing
+  // ─────────────────────────────────────────────────────────
+
   void _drawEmptyText(Canvas canvas, Size size) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: state.isReplay ? 'Select a date and tap LOAD' : 'Connecting to market data...',
-        style: const TextStyle(
-          fontFamily: 'SpaceMono',
-          fontSize: 11,
-          color: Color(0x803D4A6B),
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, Offset(size.width / 2 - tp.width / 2, size.height / 2 - tp.height / 2));
+    _drawSmallText(
+      canvas,
+      state.isReplay ? 'Select a date and tap LOAD' : 'Connecting to market data...',
+      Offset(size.width / 2 - 80, size.height / 2),
+      const Color(0x803D4A6B), size: 11,
+    );
   }
 
   void _drawGrid(Canvas canvas, double W, double H, double mn, double mx) {
-    final paint = Paint()..style = PaintingStyle.stroke;
-    final tp = TextPainter(textDirection: TextDirection.ltr);
-
     for (int i = 0; i <= 8; i++) {
       final price = mn + (mx - mn) * (i / 8);
-      final y = p2y(price, mn, mx, H);
-      paint.color = i % 2 == 0
-          ? const Color(0xE5161D32)
-          : const Color(0xB2121A2A);
-      paint.strokeWidth = 0.5;
-      // Dashed
-      _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y));
+      final y     = p2y(price, mn, mx, H);
+      _dashLine(canvas,
+        Paint()
+          ..color = i % 2 == 0 ? const Color(0xE5161D32) : const Color(0xB2121A2A)
+          ..strokeWidth = 0.5,
+        Offset(padLeft, y), Offset(W - padRight, y),
+        dash: 2, gap: 5,
+      );
     }
   }
 
-  void _dashLine(Canvas canvas, Paint paint, Offset a, Offset b,
-      {double dashLen = 2, double gapLen = 5}) {
-    final dir = (b - a);
-    final len = dir.distance;
-    final unit = dir / len;
-    double d = 0;
-    while (d < len) {
-      final start = a + unit * d;
-      final end = a + unit * min(d + dashLen, len);
-      canvas.drawLine(start, end, paint);
-      d += dashLen + gapLen;
-    }
-  }
-
-  void _drawVolume(Canvas canvas, double W, double H, int s,
-      List<Candle> vis, double cW) {
+  void _drawVolume(Canvas canvas, double W, double H, List<Candle> vis, double cW) {
     if (vis.isEmpty) return;
-    // Pseudo-volume (range as proxy)
     final maxRange = vis.map((c) => c.range).reduce(max);
     if (maxRange == 0) return;
     final maxVH = H * 0.12;
-    final paint = Paint();
-
     for (int i = 0; i < vis.length; i++) {
-      final c = vis[i];
+      final c  = vis[i];
       final vh = (c.range / maxRange) * maxVH;
-      final x = padLeft + (i + 0.5) * cW;
-      paint.color = (c.isBull ? KintanaTheme.green : KintanaTheme.red)
-          .withOpacity(0.12);
+      final x  = padLeft + (i + 0.5) * cW;
       canvas.drawRect(
         Rect.fromLTWH(x - cW * 0.35, H - padBottom - vh, cW * 0.7, vh),
-        paint,
+        Paint()..color = (c.isBull ? KintanaTheme.green : KintanaTheme.red).withOpacity(0.12),
       );
     }
   }
 
-  void _drawCandles(Canvas canvas, double H, int s, int e, List<Candle> vis,
-      double cW, double bW, double mn, double mx) {
-    final bullBody = Paint()..color = KintanaTheme.green;
-    final bearBody = Paint()..color = KintanaTheme.red;
-    final bullWick = Paint()
-      ..color = KintanaTheme.green.withOpacity(0.7)
-      ..strokeWidth = 1.2;
-    final bearWick = Paint()
-      ..color = KintanaTheme.red.withOpacity(0.7)
-      ..strokeWidth = 1.2;
-
+  void _drawCandles(Canvas canvas, double H, List<Candle> vis, double cW, double bW, double mn, double mx) {
     for (int i = 0; i < vis.length; i++) {
-      final c = vis[i];
-      final x = padLeft + (i + 0.5) * cW;
-      final openY = p2y(c.open, mn, mx, H);
+      final c      = vis[i];
+      final x      = padLeft + (i + 0.5) * cW;
+      final openY  = p2y(c.open,  mn, mx, H);
       final closeY = p2y(c.close, mn, mx, H);
-      final highY = p2y(c.high, mn, mx, H);
-      final lowY = p2y(c.low, mn, mx, H);
+      final highY  = p2y(c.high,  mn, mx, H);
+      final lowY   = p2y(c.low,   mn, mx, H);
       final bodyTop = min(openY, closeY);
-      final bodyH = max((closeY - openY).abs(), 1.0);
-      final isBull = c.isBull;
+      final bodyH   = max((closeY - openY).abs(), 1.0);
+      final isBull  = c.isBull;
+      final col     = isBull ? KintanaTheme.green : KintanaTheme.red;
 
       // Wick
       canvas.drawLine(Offset(x, highY), Offset(x, bodyTop),
-          isBull ? bullWick : bearWick);
+          Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2);
       canvas.drawLine(Offset(x, bodyTop + bodyH), Offset(x, lowY),
-          isBull ? bullWick : bearWick);
+          Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2);
 
-      // Body
+      // Body gradient
       final rect = RRect.fromRectAndRadius(
-        Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH),
-        const Radius.circular(1.5),
-      );
+          Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH), const Radius.circular(1.5));
+      canvas.drawRRect(rect, Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter, end: Alignment.bottomCenter,
+          colors: isBull
+              ? [KintanaTheme.green, KintanaTheme.green.withOpacity(0.7)]
+              : [KintanaTheme.red.withOpacity(0.85), KintanaTheme.red],
+        ).createShader(Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH)));
 
-      if (isBull) {
-        // Gradient fill
-        final grad = Paint()
-          ..shader = LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              KintanaTheme.green,
-              KintanaTheme.green.withOpacity(0.7),
-            ],
-          ).createShader(Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH));
-        canvas.drawRRect(rect, grad);
-      } else {
-        final grad = Paint()
-          ..shader = LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              KintanaTheme.red.withOpacity(0.85),
-              KintanaTheme.red,
-            ],
-          ).createShader(Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH));
-        canvas.drawRRect(rect, grad);
-      }
-
-      // Doji highlight
+      // Doji
       if (bodyH <= 1.5) {
-        canvas.drawLine(
-          Offset(x - bW / 2, openY),
-          Offset(x + bW / 2, openY),
-          Paint()
-            ..color = KintanaTheme.yellow.withOpacity(0.7)
-            ..strokeWidth = 1.5,
-        );
+        canvas.drawLine(Offset(x - bW / 2, openY), Offset(x + bW / 2, openY),
+            Paint()..color = KintanaTheme.yellow.withOpacity(0.7)..strokeWidth = 1.5);
       }
     }
   }
@@ -285,231 +376,46 @@ class CandleChartPainter extends CustomPainter {
       void drawLine(double price, Color color, bool dashed, String label) {
         final y = p2y(price, mn, mx, H);
         if (y < padTop || y > H - padBottom) return;
-        final paint = Paint()
-          ..color = color
-          ..strokeWidth = 1.5;
+        final paint = Paint()..color = color..strokeWidth = 1.5;
         if (dashed) {
-          _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y),
-              dashLen: 6, gapLen: 3);
+          _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y), dash: 6, gap: 3);
         } else {
           canvas.drawLine(Offset(padLeft, y), Offset(W - padRight, y), paint);
         }
-        // Label
         _drawPill(canvas, label, Offset(padLeft + 6, y - 7), color);
       }
 
       drawLine(t.entry, lc.withOpacity(0.8), t.status == 'pending',
-          '${isBull ? '▲' : '▼'} ${t.status == 'pending' ? 'PENDING' : isBull ? 'BUY' : 'SELL'} @ ${fmt(t.entry)}');
-      if (t.sl != null) drawLine(t.sl!, KintanaTheme.red.withOpacity(0.7), true, '🛑 SL ${fmt(t.sl)}');
-      if (t.tp1 != null) drawLine(t.tp1!, KintanaTheme.green.withOpacity(0.7), true, '🎯 TP ${fmt(t.tp1)}');
+          '${isBull ? '▲' : '▼'} ${t.status == 'pending' ? 'PENDING' : isBull ? 'BUY' : 'SELL'} @ ${fp(t.entry)}');
+      if (t.sl  != null) drawLine(t.sl!,  KintanaTheme.red.withOpacity(0.7),   true, '🛑 SL ${fp(t.sl)}');
+      if (t.tp1 != null) drawLine(t.tp1!, KintanaTheme.green.withOpacity(0.7), true, '🎯 TP ${fp(t.tp1)}');
     }
   }
 
-  void _drawPill(Canvas canvas, String text, Offset pos, Color color) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: 'SpaceMono',
-          fontSize: 7.5,
-          color: color,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    final pad = 5.0;
-    final rect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(pos.dx - pad, pos.dy - 1, tp.width + pad * 2, tp.height + 2),
-      const Radius.circular(3),
-    );
-    canvas.drawRRect(rect, Paint()..color = color.withOpacity(0.18));
-    canvas.drawRRect(
-      rect,
-      Paint()
-        ..color = color.withOpacity(0.55)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.8,
-    );
-    tp.paint(canvas, pos);
-  }
-
-  void _drawJPSignals(Canvas canvas, double W, double H, int s, int e, double cW,
-      double mn, double mx, int totalSlots) {
-    hitAreas.clear();
-    for (final sig in state.jpSignals) {
-      if (sig.idx < s || sig.idx > e) continue;
-      final localIdx = sig.idx - s;
-      final x = padLeft + (localIdx + 0.5) * cW;
-      final isBuy = sig.type == 'BUY';
-      final col = isBuy ? KintanaTheme.green : KintanaTheme.red;
-      final sigY = isBuy
-          ? p2y(sig.price, mn, mx, H) + 22
-          : p2y(sig.price, mn, mx, H) - 22;
-
-      // Glow circle
-      canvas.drawCircle(
-        Offset(x, p2y(sig.price, mn, mx, H)),
-        7,
-        Paint()
-          ..color = col.withOpacity(0.25)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
-      );
-      canvas.drawCircle(
-        Offset(x, p2y(sig.price, mn, mx, H)),
-        4,
-        Paint()..color = col,
-      );
-
-      // Arrow
-      final arrowPath = Path();
-      if (isBuy) {
-        arrowPath.moveTo(x, sigY - 13);
-        arrowPath.lineTo(x - 9, sigY + 2);
-        arrowPath.lineTo(x + 9, sigY + 2);
-      } else {
-        arrowPath.moveTo(x, sigY + 13);
-        arrowPath.lineTo(x - 9, sigY - 2);
-        arrowPath.lineTo(x + 9, sigY - 2);
-      }
-      arrowPath.close();
-      canvas.drawPath(
-        arrowPath,
-        Paint()
-          ..color = col
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8),
-      );
-      canvas.drawPath(arrowPath, Paint()..color = col);
-
-      // Badge label
-      final lbl = isBuy ? '▲ BUY' : '▼ SELL';
-      final badgeY = isBuy ? sigY + 4 : sigY - 17;
-      _drawPill(canvas, '$lbl  JP', Offset(x - 22, badgeY), col);
-
-      // Sub-label
-      _drawSmallText(canvas, 'JP', Offset(x - 6, isBuy ? badgeY + 14 : badgeY - 5),
-          col.withOpacity(0.7));
-
-      // Register hit area
-      hitAreas.add(JPHitArea(cx: x, cy: sigY, radius: 24, sigIdx: sig.idx));
-
-      // Active signal highlight ring
-      if (activeJPIdx != null && activeJPIdx == sig.idx) {
-        canvas.drawCircle(
-          Offset(x, sigY),
-          18,
-          Paint()
-            ..color = col.withOpacity(0.4)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5,
-        );
-      }
-    }
-
-    // ── Draw TP/SL for active signal
-    if (state.activeJPSig != null) {
-      _drawActiveSignalLines(canvas, W, H, s, cW, mn, mx);
-    }
-  }
-
-  void _drawActiveSignalLines(Canvas canvas, double W, double H, int s,
-      double cW, double mn, double mx) {
-    final sig = state.activeJPSig!;
-    final isBuy = sig.isBuy;
-    final atr = state.calcATR();
-    final entry = sig.entry;
-    final tp = isBuy ? entry + atr * state.jpTPAtr : entry - atr * state.jpTPAtr;
-    final sl = isBuy ? entry - atr * state.jpSLAtr : entry + atr * state.jpSLAtr;
-
-    final entY = p2y(entry, mn, mx, H);
-    final tpY = p2y(tp, mn, mx, H);
-    final slY = p2y(sl, mn, mx, H);
-
-    void drawDash(double y, Color col, String label) {
-      if (y < padTop || y > H - padBottom) return;
-      final p = Paint()
-        ..color = col
-        ..strokeWidth = 1.2;
-      _dashLine(canvas, p, Offset(padLeft, y), Offset(W - padRight, y), dashLen: 6, gapLen: 4);
-      // Label on right axis
-      final tp2 = TextPainter(
-        text: TextSpan(
-          text: label,
-          style: TextStyle(
-            fontFamily: 'SpaceMono',
-            fontSize: 7,
-            fontWeight: FontWeight.bold,
-            color: col,
-          ),
-        ),
-        textDirection: TextDirection.ltr,
-      )..layout();
-      canvas.drawRect(
-        Rect.fromLTWH(W - padRight + 1, y - 7, padRight - 2, 14),
-        Paint()..color = const Color(0xF00D1020),
-      );
-      tp2.paint(canvas, Offset(W - padRight + 4, y - 5));
-    }
-
-    drawDash(entY, Colors.white.withOpacity(0.35), 'ENTRY');
-    drawDash(tpY, KintanaTheme.yellow, 'TP ${fmt(tp)}');
-    drawDash(slY, KintanaTheme.red, 'SL ${fmt(sl)}');
-  }
-
-  void _drawLivePriceLine(Canvas canvas, double W, double H, double mn, double mx,
-      double cW, int s, int visLen) {
+  void _drawLivePriceLine(Canvas canvas, double W, double H, double mn, double mx, double cW, int s, int visLen) {
     final price = state.price!;
     final y = p2y(price, mn, mx, H);
     if (y < padTop || y > H - padBottom) return;
-
-    final up = state.prevPrice == null || price >= state.prevPrice!;
+    final up  = state.prevPrice == null || price >= state.prevPrice!;
     final col = up ? KintanaTheme.green : KintanaTheme.red;
 
     // Glow
-    final glowPaint = Paint()
-      ..color = col.withOpacity(0.4)
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-    canvas.drawLine(
-      Offset(padLeft, y),
-      Offset(W - padRight, y),
-      glowPaint..strokeWidth = 2,
-    );
+    canvas.drawLine(Offset(padLeft, y), Offset(W - padRight, y),
+        Paint()..color = col.withOpacity(0.4)..strokeWidth = 2
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
 
-    // Main dashed line
-    _dashLine(
-      canvas,
-      Paint()
-        ..color = col.withOpacity(0.7)
-        ..strokeWidth = 1.2,
-      Offset(padLeft, y),
-      Offset(W - padRight, y),
-      dashLen: 5,
-      gapLen: 3,
-    );
+    // Dashed line
+    _dashLine(canvas, Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2,
+        Offset(padLeft, y), Offset(W - padRight, y), dash: 5, gap: 3);
 
     // Price badge
     final badgeW = padRight - 2;
     final bx = W - padRight + 1;
-    final rr = RRect.fromRectAndRadius(
-      Rect.fromLTWH(bx, y - 8, badgeW, 16),
-      const Radius.circular(3),
-    );
+    final rr = RRect.fromRectAndRadius(Rect.fromLTWH(bx, y - 8, badgeW, 16), const Radius.circular(3));
     canvas.drawRRect(rr, Paint()..color = col);
-    final tp = TextPainter(
-      text: TextSpan(
-        text: fmt(price),
-        style: const TextStyle(
-          fontFamily: 'SpaceMono',
-          fontSize: 8,
-          fontWeight: FontWeight.bold,
-          color: Color(0xFF050810),
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, Offset(bx + (badgeW - tp.width) / 2, y - 5.5));
+    _drawSmallText(canvas, fp(price), Offset(bx + 2, y - 5), const Color(0xFF050810), bold: true, size: 8);
 
-    // Pulse dot on last candle
+    // Pulse dot
     final lastLocal = state.candles.length - 1 - s;
     if (lastLocal >= 0 && lastLocal < visLen) {
       final lx = padLeft + (lastLocal + 0.5) * cW;
@@ -524,80 +430,110 @@ class CandleChartPainter extends CustomPainter {
     final local = rIdx - s;
     if (local >= totalSlots) return;
     final x = padLeft + (local + 0.5) * cW;
-    canvas.drawLine(
-      Offset(x, padTop),
-      Offset(x, H - padBottom),
-      Paint()
-        ..color = KintanaTheme.purple.withOpacity(0.6)
-        ..strokeWidth = 1,
-    );
+    canvas.drawLine(Offset(x, padTop), Offset(x, H - padBottom),
+        Paint()..color = KintanaTheme.purple.withOpacity(0.6)..strokeWidth = 1);
   }
 
   void _drawYAxis(Canvas canvas, double W, double H, double mn, double mx) {
     for (int i = 0; i <= 8; i++) {
       final price = mn + (mx - mn) * (i / 8);
-      final y = p2y(price, mn, mx, H);
+      final y     = p2y(price, mn, mx, H);
       if (y < padTop || y > H - padBottom) continue;
-      _drawSmallText(
-        canvas,
-        fmt(price),
-        Offset(W - padRight + 3, y - 4),
-        KintanaTheme.t3.withOpacity(0.9),
-      );
+      _drawSmallText(canvas, fp(price), Offset(W - padRight + 3, y - 4), KintanaTheme.t3.withOpacity(0.9));
     }
   }
 
-  void _drawXAxis(Canvas canvas, double W, double H, int s, int e,
-      List<Candle> vis, double cW) {
+  void _drawXAxis(Canvas canvas, double W, double H, List<Candle> vis, double cW) {
     if (vis.isEmpty) return;
     final step = max(1, (vis.length / 6).ceil());
     for (int i = 0; i < vis.length; i += step) {
-      final c = vis[i];
-      final x = padLeft + (i + 0.5) * cW;
+      final c  = vis[i];
+      final x  = padLeft + (i + 0.5) * cW;
       final dt = DateTime.fromMillisecondsSinceEpoch(c.time * 1000);
-      final label = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-      _drawSmallText(canvas, label, Offset(x - 12, H - padBottom + 4), KintanaTheme.t3);
+      final lbl = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      _drawSmallText(canvas, lbl, Offset(x - 12, H - padBottom + 4), KintanaTheme.t3);
     }
   }
 
   void _drawCrosshair(Canvas canvas, double W, double H, double mn, double mx) {
-    final x = mouseX!;
-    final y = mouseY!;
-    final paint = Paint()
-      ..color = KintanaTheme.t2.withOpacity(0.25)
-      ..strokeWidth = 0.5;
-    _dashLine(canvas, paint, Offset(x, padTop), Offset(x, H - padBottom), dashLen: 3, gapLen: 4);
-    _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y), dashLen: 3, gapLen: 4);
-
-    // Price label on Y axis
+    final x = mouseX!; final y = mouseY!;
+    final paint = Paint()..color = KintanaTheme.t2.withOpacity(0.25)..strokeWidth = 0.5;
+    _dashLine(canvas, paint, Offset(x, padTop), Offset(x, H - padBottom), dash: 3, gap: 4);
+    _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y), dash: 3, gap: 4);
     final hp = y2p(y, mn, mx, H);
-    final bxR = W - padRight;
-    canvas.drawRect(
-      Rect.fromLTWH(bxR, y - 7.5, padRight - 1, 15),
-      Paint()..color = const Color(0xF0101424),
-    );
-    canvas.drawRect(
-      Rect.fromLTWH(bxR, y - 7.5, padRight - 1, 15),
-      Paint()
-        ..color = KintanaTheme.b2.withOpacity(0.9)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 0.8,
-    );
-    _drawSmallText(canvas, fmt(hp), Offset(bxR + 3, y - 4.5), KintanaTheme.t1.withOpacity(0.8));
+    canvas.drawRect(Rect.fromLTWH(W - padRight, y - 7.5, padRight - 1, 15), Paint()..color = const Color(0xF0101424));
+    canvas.drawRect(Rect.fromLTWH(W - padRight, y - 7.5, padRight - 1, 15),
+        Paint()..color = KintanaTheme.b2.withOpacity(0.9)..style = PaintingStyle.stroke..strokeWidth = 0.8);
+    _drawSmallText(canvas, fp(hp), Offset(W - padRight + 3, y - 4.5), KintanaTheme.t1.withOpacity(0.8));
   }
 
-  void _drawSmallText(Canvas canvas, String text, Offset pos, Color color) {
+  // ─────────────────────────────────────────────────────────
+  // ── Drawing helpers
+  // ─────────────────────────────────────────────────────────
+
+  void _dashLine(Canvas canvas, Paint paint, Offset a, Offset b,
+      {double dash = 2, double gap = 5}) {
+    final dir = b - a;
+    final len = dir.distance;
+    if (len == 0) return;
+    final unit = dir / len;
+    double d = 0;
+    while (d < len) {
+      canvas.drawLine(a + unit * d, a + unit * min(d + dash, len), paint);
+      d += dash + gap;
+    }
+  }
+
+  void _dashRect(Canvas canvas, Rect rect, Color color, double strokeWidth,
+      {double dash = 3, double gap = 3}) {
+    final p = Paint()..color = color..strokeWidth = strokeWidth;
+    final corners = [
+      [rect.topLeft, rect.topRight],
+      [rect.topRight, rect.bottomRight],
+      [rect.bottomRight, rect.bottomLeft],
+      [rect.bottomLeft, rect.topLeft],
+    ];
+    for (final seg in corners) _dashLine(canvas, p, seg[0], seg[1], dash: dash, gap: gap);
+  }
+
+  void _drawPill(Canvas canvas, String text, Offset pos, Color color) {
+    final tp = _buildTP(text, 7.5, color, bold: true);
+    const pad = 5.0;
+    final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(pos.dx - pad, pos.dy - 1, tp.width + pad * 2, tp.height + 2), const Radius.circular(3));
+    canvas.drawRRect(rect, Paint()..color = color.withOpacity(0.18));
+    canvas.drawRRect(rect, Paint()..color = color.withOpacity(0.55)..style = PaintingStyle.stroke..strokeWidth = 0.8);
+    tp.paint(canvas, pos);
+  }
+
+  TextPainter _buildTP(String text, double size, Color color, {bool bold = false, bool center = false}) {
     final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          fontFamily: 'SpaceMono',
-          fontSize: 7.5,
-          color: color,
-        ),
-      ),
+      text: TextSpan(text: text, style: TextStyle(
+        fontFamily: 'SpaceMono', fontSize: size, color: color,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      )),
       textDirection: TextDirection.ltr,
+      textAlign: center ? TextAlign.center : TextAlign.left,
     )..layout();
+    return tp;
+  }
+
+  double _measureText(String text, double size, {bool bold = false}) {
+    return _buildTP(text, size, Colors.white, bold: bold).width;
+  }
+
+  void _drawSmallText(Canvas canvas, String text, Offset pos, Color color,
+      {double size = 7.5, bool bold = false, bool center = false, double? width}) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: TextStyle(
+        fontFamily: 'SpaceMono', fontSize: size, color: color,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      )),
+      textDirection: TextDirection.ltr,
+      textAlign: center ? TextAlign.center : TextAlign.left,
+    );
+    if (width != null) tp.layout(minWidth: width, maxWidth: width);
+    else tp.layout();
     tp.paint(canvas, pos);
   }
 
