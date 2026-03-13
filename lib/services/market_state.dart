@@ -847,13 +847,6 @@ class MarketState extends ChangeNotifier {
   }
 }
 
-// -- Price formatter
-String fp(double? p) {
-  if (p == null) return '--';
-  if (p >= 100) return p.toStringAsFixed(2);
-  if (p >= 1)   return p.toStringAsFixed(4);
-  return p.toStringAsFixed(5);
-}
 
 class _ReplayTick {
   final int time;
