@@ -14,7 +14,16 @@ class JPSignal {
   final String type; // 'BUY' or 'SELL'
   final double price;
   final JPPhase phase;
-  const JPSignal({required this.idx, required this.type, required this.price, required this.phase});
+  final bool confirmed;   // true = EMA trend + ATR size OK
+  final String filterNote; // reason if filtered
+  const JPSignal({
+    required this.idx,
+    required this.type,
+    required this.price,
+    required this.phase,
+    this.confirmed = true,
+    this.filterNote = '',
+  });
 }
 
 // ── Phase AMD détectée
@@ -534,11 +543,45 @@ class MarketState extends ChangeNotifier {
           ? c[manipIdx].high   // entry = haut du wick (stop hunt haut)
           : c[manipIdx].low;   // entry = bas du wick (stop hunt bas)
 
+      // ── FILTER 1: ATR minimum size
+      // ACC zone < 0.4× ATR = trop petite = noise
+      final atrNow = atrAt(manipIdx);
+      final accSize = acc.high - acc.low;
+      final atrOk = accSize >= atrNow * 0.4;
+
+      // ── FILTER 2: EMA 50 trend filter
+      // BUY valid raha price above EMA50, SELL valid raha below EMA50
+      bool emaOk = true;
+      String emaNote = '';
+      if (c.length >= 50) {
+        final closes = c.map((x) => x.close).toList();
+        final ema50  = calcEMA(closes, 50);
+        final emaVal = ema50[manipIdx];
+        if (emaVal != null) {
+          if (sigType == 'BUY'  && c[manipIdx].close < emaVal) {
+            emaOk = false;
+            emaNote = 'Against EMA50 trend (price below EMA50)';
+          }
+          if (sigType == 'SELL' && c[manipIdx].close > emaVal) {
+            emaOk = false;
+            emaNote = 'Against EMA50 trend (price above EMA50)';
+          }
+        }
+      }
+
+      final confirmed = atrOk && emaOk;
+      final filterNote = !atrOk
+          ? 'ACC zone too small (${(accSize/atrNow).toStringAsFixed(2)}× ATR)'
+          : !emaOk ? emaNote : '';
+
       final phase = JPPhase(
         acc: acc, manipIdx: manipIdx, manipDir: manipDir,
         distDir: manipDir == 'up' ? 'down' : 'up',
       );
-      jpSignals.add(JPSignal(idx: manipIdx, type: sigType, price: sigPrice, phase: phase));
+      jpSignals.add(JPSignal(
+        idx: manipIdx, type: sigType, price: sigPrice,
+        phase: phase, confirmed: confirmed, filterNote: filterNote,
+      ));
       jpPhases.add(phase);
     }
   }
