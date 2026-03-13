@@ -8,14 +8,29 @@ import '../models/models.dart';
 
 const int kDerivAppId = 129691;
 
-// ── Signal AMD (équivalent JS gainzSignals)
+// ── Hybrid Signal Situation
+enum JPSituation {
+  pureWick,      // S1: wick only outside ACC, body inside → 85%
+  bodyRevert,    // S2: body outside but N+1 reverts inside → 70%
+  breakout,      // S3: body outside + continues → SKIP 20%
+  fvgRetest,     // S4: Fair Value Gap → wait retest → 65%
+  ifvg,          // S5: Inverse FVG → trap → 80%
+}
+
+// ── Signal AMD (hybrid)
 class JPSignal {
   final int idx;
-  final String type; // 'BUY' or 'SELL'
+  final String type;        // 'BUY' or 'SELL'
   final double price;
   final JPPhase phase;
-  final bool confirmed;   // true = EMA trend + ATR size OK
-  final String filterNote; // reason if filtered
+  final bool confirmed;
+  final String filterNote;
+  final JPSituation situation;
+  final int confidence;     // 0-100
+  final String entryTiming; // 'aggressive' | 'conservative' | 'wait_retest' | 'skip'
+  final double? fvgLow;     // for S4/S5 FVG zone
+  final double? fvgHigh;
+
   const JPSignal({
     required this.idx,
     required this.type,
@@ -23,6 +38,11 @@ class JPSignal {
     required this.phase,
     this.confirmed = true,
     this.filterNote = '',
+    this.situation = JPSituation.pureWick,
+    this.confidence = 85,
+    this.entryTiming = 'aggressive',
+    this.fvgLow,
+    this.fvgHigh,
   });
 }
 
@@ -535,44 +555,132 @@ class MarketState extends ChangeNotifier {
 
       if (manipIdx == -1) continue;
 
-      // ── Signal — exact copy from HTML
-      // Fakeout UP  → prix va descendre → SELL
-      // Fakeout DOWN → prix va monter  → BUY
+      // ── Fakeout UP  → SELL / Fakeout DOWN → BUY
       final sigType  = manipDir == 'up' ? 'SELL' : 'BUY';
       final sigPrice = manipDir == 'up'
-          ? c[manipIdx].high   // entry = haut du wick (stop hunt haut)
-          : c[manipIdx].low;   // entry = bas du wick (stop hunt bas)
+          ? c[manipIdx].high
+          : c[manipIdx].low;
 
-      // ── FILTER 1: ATR minimum size
-      // ACC zone < 0.4× ATR = trop petite = noise
-      final atrNow = atrAt(manipIdx);
-      final accSize = acc.high - acc.low;
-      final atrOk = accSize >= atrNow * 0.4;
+      final mc = c[manipIdx];
+      final isBullManip = mc.close > mc.open;
 
-      // ── FILTER 2: EMA 50 trend filter
-      // BUY valid raha price above EMA50, SELL valid raha below EMA50
-      bool emaOk = true;
-      String emaNote = '';
-      if (c.length >= 50) {
-        final closes = c.map((x) => x.close).toList();
-        final ema50  = calcEMA(closes, 50);
-        final emaVal = ema50[manipIdx];
-        if (emaVal != null) {
-          if (sigType == 'BUY'  && c[manipIdx].close < emaVal) {
-            emaOk = false;
-            emaNote = 'Against EMA50 trend (price below EMA50)';
-          }
-          if (sigType == 'SELL' && c[manipIdx].close > emaVal) {
-            emaOk = false;
-            emaNote = 'Against EMA50 trend (price above EMA50)';
-          }
+      // ══════════════════════════════════════════════════
+      // ── HYBRID SITUATION DETECTION
+      // ══════════════════════════════════════════════════
+
+      // ── S1: Pure Wick — body stays inside ACC, only wick pierces
+      // Body = entre open et close
+      final bodyTop    = max(mc.open, mc.close);
+      final bodyBot    = min(mc.open, mc.close);
+      final bodyInside = manipDir == 'up'
+          ? bodyTop <= acc.high + acc.atr * 0.1   // body reste dans/près zone haute
+          : bodyBot >= acc.low  - acc.atr * 0.1;  // body reste dans/près zone basse
+      final wickPierces = manipDir == 'up'
+          ? mc.high > acc.high + acc.atr * 0.15
+          : mc.low  < acc.low  - acc.atr * 0.15;
+
+      // ── S5: Inverse FVG (IFVG) — gap between C-1 and C+1 inversé
+      // C[i-1].low > C[i+1].high (bullish IFVG) ou C[i-1].high < C[i+1].low (bearish IFVG)
+      bool hasIFVG = false;
+      double? ifvgLow, ifvgHigh;
+      if (manipIdx >= 1 && manipIdx + 1 < n) {
+        final prev = c[manipIdx - 1];
+        final next = c[manipIdx + 1];
+        if (sigType == 'BUY' && prev.low > next.high) {
+          // Bullish IFVG: gap down = trap, true direction UP
+          hasIFVG = true;
+          ifvgLow  = next.high;
+          ifvgHigh = prev.low;
+        } else if (sigType == 'SELL' && prev.high < next.low) {
+          // Bearish IFVG: gap up = trap, true direction DOWN
+          hasIFVG = true;
+          ifvgLow  = prev.high;
+          ifvgHigh = next.low;
         }
       }
 
-      final confirmed = atrOk && emaOk;
-      final filterNote = !atrOk
-          ? 'ACC zone too small (${(accSize/atrNow).toStringAsFixed(2)}× ATR)'
-          : !emaOk ? emaNote : '';
+      // ── S4: Fair Value Gap (FVG) — gap DANS la direction du breakout
+      // = distribution forte, entry seulement au retest du gap
+      bool hasFVG = false;
+      double? fvgLow, fvgHigh;
+      if (manipIdx >= 1 && manipIdx + 1 < n) {
+        final prev = c[manipIdx - 1];
+        final next = c[manipIdx + 1];
+        if (sigType == 'SELL' && prev.high < next.low) {
+          // FVG bearish: gap up = momentum SELL fort → wait retest
+          hasFVG = true;
+          fvgLow  = prev.high;
+          fvgHigh = next.low;
+        } else if (sigType == 'BUY' && prev.low > next.high) {
+          // FVG bullish: gap down = momentum BUY fort → wait retest
+          hasFVG = true;
+          fvgLow  = next.high;
+          fvgHigh = prev.low;
+        }
+      }
+
+      // ── S3 / S2: Body outside check + N+1 confirmation
+      bool bodyOutside = false;
+      bool nextReverts = false;
+      if (manipDir == 'up') {
+        bodyOutside = bodyTop > acc.high + acc.atr * 0.1;
+        if (manipIdx + 1 < n) {
+          final next = c[manipIdx + 1];
+          nextReverts = next.close < acc.high + acc.atr * 0.2;
+        }
+      } else {
+        bodyOutside = bodyBot < acc.low - acc.atr * 0.1;
+        if (manipIdx + 1 < n) {
+          final next = c[manipIdx + 1];
+          nextReverts = next.close > acc.low - acc.atr * 0.2;
+        }
+      }
+
+      // ── Determine situation + confidence + entry
+      JPSituation situation;
+      int confidence;
+      String entryTiming;
+      bool confirmed;
+      String filterNote = '';
+
+      if (hasIFVG) {
+        // S5 — strongest manipulation trap
+        situation   = JPSituation.ifvg;
+        confidence  = 80;
+        entryTiming = 'aggressive';
+        confirmed   = true;
+      } else if (bodyInside && wickPierces) {
+        // S1 — classic pure wick stop hunt
+        situation   = JPSituation.pureWick;
+        confidence  = 85;
+        entryTiming = 'aggressive';
+        confirmed   = true;
+      } else if (bodyOutside && nextReverts) {
+        // S2 — body outside but N+1 pulls back inside
+        situation   = JPSituation.bodyRevert;
+        confidence  = 70;
+        entryTiming = 'conservative';
+        confirmed   = true;
+      } else if (hasFVG) {
+        // S4 — FVG: wait for retest before entry
+        situation   = JPSituation.fvgRetest;
+        confidence  = 65;
+        entryTiming = 'wait_retest';
+        confirmed   = true; // valid but needs patience
+      } else if (bodyOutside && !nextReverts) {
+        // S3 — breakout continuation: SKIP
+        situation   = JPSituation.breakout;
+        confidence  = 20;
+        entryTiming = 'skip';
+        confirmed   = false;
+        filterNote  = 'Breakout continuation — distribution, not manipulation';
+      } else {
+        // Fallback — treat as S1 with lower confidence
+        situation   = JPSituation.pureWick;
+        confidence  = 60;
+        entryTiming = 'aggressive';
+        confirmed   = true;
+      }
 
       final phase = JPPhase(
         acc: acc, manipIdx: manipIdx, manipDir: manipDir,
@@ -580,7 +688,14 @@ class MarketState extends ChangeNotifier {
       );
       jpSignals.add(JPSignal(
         idx: manipIdx, type: sigType, price: sigPrice,
-        phase: phase, confirmed: confirmed, filterNote: filterNote,
+        phase: phase,
+        confirmed: confirmed,
+        filterNote: filterNote,
+        situation: situation,
+        confidence: confidence,
+        entryTiming: entryTiming,
+        fvgLow:  hasFVG || hasIFVG ? (fvgLow  ?? ifvgLow)  : null,
+        fvgHigh: hasFVG || hasIFVG ? (fvgHigh ?? ifvgHigh) : null,
       ));
       jpPhases.add(phase);
     }
