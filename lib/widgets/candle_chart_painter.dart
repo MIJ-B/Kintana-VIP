@@ -163,12 +163,32 @@ class CandleChartPainter extends CustomPainter {
         final mx2c = cL + (mLocal + 0.5) * cW;
         final mHy  = p2y(mc.high, mn, mx, H);
         final mLy  = p2y(mc.low,  mn, mx, H);
-        // Confirmed vs filtered visual
+        // ── Hybrid situation colors
         final sig0 = state.jpSignals.where((sg) => sg.idx == manipIdx).firstOrNull;
         final isConfirmed = sig0?.confirmed ?? true;
-        final col  = isConfirmed
-            ? (isBull ? KintanaTheme.green : KintanaTheme.red)
-            : const Color(0xFF4A5568); // grey si filtered
+        final situation   = sig0?.situation;
+        final confidence  = sig0?.confidence ?? 85;
+
+        // Color per situation
+        Color col;
+        if (!isConfirmed) {
+          col = const Color(0xFF4A5568); // grey = skip/breakout
+        } else {
+          switch (situation) {
+            case JPSituation.pureWick:
+              col = isBull ? KintanaTheme.green : KintanaTheme.red; // full bright
+            case JPSituation.ifvg:
+              col = isBull ? const Color(0xFF00FFB3) : const Color(0xFFFF6B9D); // cyan/pink = IFVG
+            case JPSituation.bodyRevert:
+              col = isBull ? const Color(0xFF7BFF6A) : const Color(0xFFFFAA44); // lighter
+            case JPSituation.fvgRetest:
+              col = const Color(0xFFFFD740); // yellow = wait retest
+            case JPSituation.breakout:
+              col = const Color(0xFF4A5568); // grey
+            case null:
+              col = isBull ? KintanaTheme.green : KintanaTheme.red;
+          }
+        }
 
         // Highlight du wick de manipulation (ligne épaisse colorée + glow)
         final wickPaint = Paint()
