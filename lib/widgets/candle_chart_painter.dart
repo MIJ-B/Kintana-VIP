@@ -163,7 +163,12 @@ class CandleChartPainter extends CustomPainter {
         final mx2c = cL + (mLocal + 0.5) * cW;
         final mHy  = p2y(mc.high, mn, mx, H);
         final mLy  = p2y(mc.low,  mn, mx, H);
-        final col  = isBull ? KintanaTheme.green : KintanaTheme.red;
+        // Confirmed vs filtered visual
+        final sig0 = state.jpSignals.where((sg) => sg.idx == manipIdx).firstOrNull;
+        final isConfirmed = sig0?.confirmed ?? true;
+        final col  = isConfirmed
+            ? (isBull ? KintanaTheme.green : KintanaTheme.red)
+            : const Color(0xFF4A5568); // grey si filtered
 
         // Highlight du wick de manipulation (ligne épaisse colorée + glow)
         final wickPaint = Paint()
