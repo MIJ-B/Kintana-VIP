@@ -979,11 +979,11 @@ class MarketState extends ChangeNotifier {
             if (zone.isBuy) {
               zone.entry = zone.zoneLow + zone.zoneSize * 0.5; // mid zone
               zone.sl    = zone.zoneLow - atr * 0.3;           // below zone
-              zone.tp    = zone.entry   + atr * 2.5;           // 2.5R TP
+              zone.tp    = zone.entry!  + atr * 2.5;
             } else {
               zone.entry = zone.zoneHigh - zone.zoneSize * 0.5;
               zone.sl    = zone.zoneHigh + atr * 0.3;
-              zone.tp    = zone.entry    - atr * 2.5;
+              zone.tp    = zone.entry!   - atr * 2.5;
             }
             zone.status = SDZoneStatus.confirmed;
             changed = true;
