@@ -90,6 +90,7 @@ class CandleChartPainter extends CustomPainter {
     _drawVolume(canvas, W, H, vis, cW);
     _drawCandles(canvas, H, vis, cW, bW, mn, mx);
     _drawTradeLines(canvas, W, H, mn, mx);
+    _drawSDZones(canvas, W, H, s, cW, mn, mx);
 
     // ── JOROpredict — exact copy from HTML drawGainzSignals()
     if (joropredictActive) {
@@ -307,6 +308,142 @@ class CandleChartPainter extends CustomPainter {
             Paint()..color = const Color(0xF00D1020));
         _drawSmallText(canvas, 'SL ${fp(sl2)}', Offset(cR - 38, slY - 4),
             KintanaTheme.red, bold: true, size: 7);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // ── Supply & Demand Zones Drawing
+  // ─────────────────────────────────────────────────────────
+
+  void _drawSDZones(Canvas canvas, double W, double H, int s, double cW, double mn, double mx) {
+    if (!state.sdActive) return;
+    final cL = padLeft;
+    final cR = W - padRight;
+
+    for (final zone in state.sdZones) {
+      if (zone.status == SDZoneStatus.expired) continue;
+
+      final zy1 = p2y(zone.zoneHigh, mn, mx, H);
+      final zy2 = p2y(zone.zoneLow,  mn, mx, H);
+      if (zy2 < padTop || zy1 > H - padBottom) continue;
+
+      final isBuy = zone.isBuy;
+
+      // ── STEP 1 & 2: Yellow entry zone rectangle (waiting or entered)
+      if (zone.status == SDZoneStatus.waiting ||
+          zone.status == SDZoneStatus.entered) {
+        final fillCol   = zone.status == SDZoneStatus.entered
+            ? const Color(0x33FFD740)  // brighter when price inside
+            : const Color(0x1AFFD740);
+        final strokeCol = zone.status == SDZoneStatus.entered
+            ? const Color(0xCCFFD740)
+            : const Color(0x80FFD740);
+
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = fillCol,
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          strokeCol, 1.0, dash: 5, gap: 3);
+
+        // Label
+        final lbl = isBuy ? 'DEMAND ZONE' : 'SUPPLY ZONE';
+        final sub = zone.status == SDZoneStatus.entered ? '⚡ PRICE IN ZONE' : '';
+        _drawSmallText(canvas, lbl,
+            Offset(cL + 6, zy1 + 4),
+            const Color(0xE5FFD740), bold: true, size: 7);
+        if (sub.isNotEmpty) {
+          _drawSmallText(canvas, sub,
+              Offset(cL + 6, zy1 + 14),
+              const Color(0xFFFFD740), bold: true, size: 6.5);
+        }
+
+        // Waiting for LTF label
+        if (zone.status == SDZoneStatus.entered && !zone.ltfConfirmed) {
+          _drawSmallText(canvas, '⏳ Awaiting LTF confirmation...',
+              Offset(cL + 6, zy2 - 12),
+              const Color(0xB3FFD740), size: 6);
+        }
+      }
+
+      // ── STEP 3: Confirmed — draw SL rect (red) + TP rect (green)
+      if (zone.status == SDZoneStatus.confirmed &&
+          zone.entry != null && zone.sl != null && zone.tp != null) {
+
+        final entryY = p2y(zone.entry!, mn, mx, H);
+        final slY    = p2y(zone.sl!,    mn, mx, H);
+        final tpY    = p2y(zone.tp!,    mn, mx, H);
+
+        // SL rectangle (red)
+        final slTop = min(entryY, slY);
+        final slH   = (entryY - slY).abs();
+        canvas.drawRect(
+          Rect.fromLTWH(cL, slTop, cR - cL, slH),
+          Paint()..color = const Color(0x22FF3D57),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, slTop, cR - cL, slH),
+          const Color(0x99FF3D57), 1.0);
+        _drawSmallText(canvas, '🛑 SL ${fp(zone.sl)}',
+            Offset(cL + 6, slTop + 4),
+            const Color(0xE5FF3D57), bold: true, size: 7);
+
+        // TP rectangle (green)
+        final tpTop = min(entryY, tpY);
+        final tpH   = (entryY - tpY).abs();
+        canvas.drawRect(
+          Rect.fromLTWH(cL, tpTop, cR - cL, tpH),
+          Paint()..color = const Color(0x2200E676),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, tpTop, cR - cL, tpH),
+          const Color(0x9900E676), 1.0);
+        _drawSmallText(canvas, '🎯 TP ${fp(zone.tp)}',
+            Offset(cL + 6, tpTop + 4),
+            const Color(0xE500E676), bold: true, size: 7);
+
+        // Entry line
+        _dashLine(canvas,
+          Paint()..color = const Color(0xCCFFD740)..strokeWidth = 1.5,
+          Offset(cL, entryY), Offset(cR, entryY), dash: 6, gap: 3);
+        _drawSmallText(canvas, '⚡ ENTRY ${fp(zone.entry)}',
+            Offset(cL + 6, entryY - 10),
+            const Color(0xE5FFD740), bold: true, size: 7);
+
+        // Also draw yellow zone outline still
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = const Color(0x0DFFD740),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          const Color(0x40FFD740), 0.7, dash: 3, gap: 4);
+      }
+
+      // ── Hit TP / SL — fade out display
+      if (zone.status == SDZoneStatus.hitTP || zone.status == SDZoneStatus.hitSL) {
+        final hitCol = zone.status == SDZoneStatus.hitTP
+            ? const Color(0x2200E676)
+            : const Color(0x22FF3D57);
+        final hitStroke = zone.status == SDZoneStatus.hitTP
+            ? const Color(0x6600E676)
+            : const Color(0x66FF3D57);
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = hitCol,
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          hitStroke, 0.8);
+        final resultLbl = zone.status == SDZoneStatus.hitTP ? '✅ TP HIT' : '❌ SL HIT';
+        _drawSmallText(canvas, resultLbl,
+            Offset(cL + 6, zy1 + 4),
+            zone.status == SDZoneStatus.hitTP
+                ? const Color(0xE500E676)
+                : const Color(0xE5FF3D57),
+            bold: true, size: 8);
       }
     }
   }
