@@ -119,8 +119,8 @@ class _JoroScreenState extends State<JoroScreen> {
         ? (ema8 > ema20 ? 'BULLISH (EMA8 above EMA20)' : 'BEARISH (EMA8 below EMA20)')
         : 'N/A';
     final curPrice = s.isReplay && candles.isNotEmpty ? candles.last.close : s.price;
-    final jpInfo = s.joropredictActive && s.jpSignals.isNotEmpty
-        ? '\nJOROpredict signals (last 3): ${s.jpSignals.takeLast(3).map((sg) => '${sg.type}@${fp(sg.price)}').join(', ')}'
+    final jpInfo = s.sdActive && s.sdZones.isNotEmpty
+        ? '\nJOROpredict signals (last 3): ${s.sdZones.takeLast(3).map((sg) => '${sg.type}@${fp(sg.price)}').join(', ')}'
         : '';
 
     return '''=== MARKET DATA (${s.isReplay ? 'Replay' : 'Real-time Deriv'}) ===
