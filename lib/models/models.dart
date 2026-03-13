@@ -242,3 +242,91 @@ const List<Market> kMarkets = [
   Market(category: 'Commodities',   symbol: 'frxXAUUSD', name: 'Gold / US Dollar',          flag: '🥇', type: 'CMD'),
   Market(category: 'Commodities',   symbol: 'frxXAGUSD', name: 'Silver / US Dollar',        flag: '🥈', type: 'CMD'),
 ];
+
+// ══════════════════════════════════════════════
+// ── Supply & Demand Zone (Loi d'offre et demande)
+// ══════════════════════════════════════════════
+
+enum SDZoneType { supply, demand }
+enum SDZoneStatus { waiting, entered, confirmed, hitTP, hitSL, expired }
+
+class SDZone {
+  final int     id;
+  final SDZoneType type;       // supply (SELL) or demand (BUY)
+  final double  zoneHigh;      // top of yellow entry rectangle
+  final double  zoneLow;       // bottom of yellow entry rectangle
+  final int     originIdx;     // candle index where zone was detected
+  final double  originClose;   // close of origin candle
+  SDZoneStatus  status;
+
+  // Step 3 — confirmed signal levels
+  double? entry;
+  double? sl;
+  double? tp;
+
+  // LTF confirmation
+  bool    ltfConfirmed;
+  int?    ltfConfirmIdx;       // candle idx where LTF confirmed
+
+  // Result tracking
+  bool?   won;                 // true = hit TP, false = hit SL
+  DateTime createdAt;
+
+  SDZone({
+    required this.id,
+    required this.type,
+    required this.zoneHigh,
+    required this.zoneLow,
+    required this.originIdx,
+    required this.originClose,
+    this.status = SDZoneStatus.waiting,
+    this.entry,
+    this.sl,
+    this.tp,
+    this.ltfConfirmed = false,
+    this.ltfConfirmIdx,
+    this.won,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  bool get isBuy  => type == SDZoneType.demand;
+  bool get isSell => type == SDZoneType.supply;
+  double get zoneMid => (zoneHigh + zoneLow) / 2;
+  double get zoneSize => zoneHigh - zoneLow;
+
+  bool priceInZone(double price) => price >= zoneLow && price <= zoneHigh;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'type': type.name,
+    'zoneHigh': zoneHigh,
+    'zoneLow': zoneLow,
+    'originIdx': originIdx,
+    'originClose': originClose,
+    'status': status.name,
+    'entry': entry,
+    'sl': sl,
+    'tp': tp,
+    'ltfConfirmed': ltfConfirmed,
+    'ltfConfirmIdx': ltfConfirmIdx,
+    'won': won,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory SDZone.fromJson(Map<String, dynamic> j) => SDZone(
+    id:           j['id'] as int,
+    type:         SDZoneType.values.byName(j['type'] as String),
+    zoneHigh:     (j['zoneHigh'] as num).toDouble(),
+    zoneLow:      (j['zoneLow'] as num).toDouble(),
+    originIdx:    j['originIdx'] as int,
+    originClose:  (j['originClose'] as num).toDouble(),
+    status:       SDZoneStatus.values.byName(j['status'] as String? ?? 'waiting'),
+    entry:        j['entry'] != null ? (j['entry'] as num).toDouble() : null,
+    sl:           j['sl']    != null ? (j['sl']    as num).toDouble() : null,
+    tp:           j['tp']    != null ? (j['tp']    as num).toDouble() : null,
+    ltfConfirmed: j['ltfConfirmed'] as bool? ?? false,
+    ltfConfirmIdx:j['ltfConfirmIdx'] as int?,
+    won:          j['won'] as bool?,
+    createdAt:    j['createdAt'] != null ? DateTime.parse(j['createdAt']) : DateTime.now(),
+  );
+}
