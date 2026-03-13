@@ -56,7 +56,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
     );
   }
 
-  // ── Chart controls (TF buttons)
+  // ?? Chart controls (TF buttons)
   Widget _buildChartControls(MarketState s) {
     const tfs = [
       {'label': '1m', 'value': 60},
@@ -219,7 +219,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
             onTap: () {
               setState(() => _showReplayBar = !_showReplayBar);
               if (!s.isReplay && _showReplayBar) {
-                // Don't switch yet — wait for user to tap mode badge
+                // Don't switch yet ? wait for user to tap mode badge
               }
             },
             child: Container(
@@ -246,7 +246,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
     );
   }
 
-  // ── Stats bar
+  // ?? Stats bar
   Widget _buildStatsBar(MarketState s) {
     final candles = s.getCandles();
     final sessionHigh = candles.isEmpty ? null : candles.map((c) => c.high).reduce((a, b) => a > b ? a : b);
@@ -318,7 +318,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
     );
   }
 
-  // ── Replay bar
+  // ?? Replay bar
   Widget _buildReplayBar(MarketState s) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 200),
@@ -489,7 +489,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
     );
   }
 
-  // ── Main chart widget
+  // ?? Main chart widget
   Widget _buildChart(MarketState s, List<Candle> candles) {
     return Stack(
       children: [
@@ -557,14 +557,14 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
           ),
         ),
 
-        // ── OHLC overlay
+        // ?? OHLC overlay
         Positioned(
           top: 8,
           left: 8,
           child: _buildOHLCOverlay(s, candles),
         ),
 
-        // ── JOROpredict badge
+        // ?? JOROpredict badge
         if (s.joropredictActive)
           Positioned(
             top: 8,
@@ -595,7 +595,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
             ),
           ),
 
-        // ── Zoom buttons
+        // ?? Zoom buttons
         Positioned(
           top: 8,
           right: CandleChartPainter.padRight + 8,
