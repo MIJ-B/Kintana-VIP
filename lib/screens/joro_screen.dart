@@ -99,7 +99,7 @@ class _JoroScreenState extends State<JoroScreen> {
     });
   }
 
-  // ── Market context string
+  // ?? Market context string
   String _buildContext(MarketState s) {
     final candles = s.getCandles();
     final last15 = candles.takeLast(15).map((c) =>
@@ -135,7 +135,7 @@ Last 15 OHLC candles (oldest→newest): $last15
 === IMPORTANT: Analyze direction from data. BEARISH → SELL. BULLISH → BUY. ===''';
   }
 
-  // ── AMD system prompt
+  // ?? AMD system prompt
   static const _amdSystem = '''You are JORO, elite AMD (Accumulation/Manipulation/Distribution) trading AI for Deriv, forex, crypto.
 
 AMD Strategy:
