@@ -1,4 +1,4 @@
-// ── Candle model
+// ?? Candle model
 class Candle {
   final int time;
   final double open;
@@ -29,7 +29,7 @@ class Candle {
   double get range => high - low;
 }
 
-// ── Market symbol
+// ?? Market symbol
 class Market {
   final String category;
   final String symbol;
@@ -46,7 +46,7 @@ class Market {
   });
 }
 
-// ── Trade / Signal
+// ?? Trade / Signal
 class Trade {
   final int id;
   final String symbol;
@@ -139,7 +139,7 @@ class Trade {
   );
 }
 
-// ── JOROpredict signal
+// ?? JOROpredict signal
 class JOROSignal {
   final String direction; // BUY / SELL
   final String symbol;
@@ -199,7 +199,7 @@ class JOROSignal {
   );
 }
 
-// ── Price formatted
+// ?? Price formatted
 String fp(double? p) {
   if (p == null || p.isNaN) return '—';
   if (p > 10000) return p.toStringAsFixed(2);
@@ -209,7 +209,7 @@ String fp(double? p) {
   return p.toStringAsFixed(5);
 }
 
-// ── All markets
+// ?? All markets
 const List<Market> kMarkets = [
   Market(category: 'Volatility Indices', symbol: 'R_10',    name: 'Volatility 10',       flag: '🔵', type: 'SYN'),
   Market(category: 'Volatility Indices', symbol: 'R_25',    name: 'Volatility 25',       flag: '🟢', type: 'SYN'),
@@ -243,9 +243,9 @@ const List<Market> kMarkets = [
   Market(category: 'Commodities',   symbol: 'frxXAGUSD', name: 'Silver / US Dollar',        flag: '🥈', type: 'CMD'),
 ];
 
-// ══════════════════════════════════════════════
-// ── Supply & Demand Zone (Loi d'offre et demande)
-// ══════════════════════════════════════════════
+// ??????????????????????????????????????????????
+// ?? Supply & Demand Zone (Loi d'offre et demande)
+// ??????????????????????????????????????????????
 
 enum SDZoneType { supply, demand }
 enum SDZoneStatus { waiting, entered, confirmed, hitTP, hitSL, expired }
@@ -259,7 +259,7 @@ class SDZone {
   final double  originClose;   // close of origin candle
   SDZoneStatus  status;
 
-  // Step 3 — confirmed signal levels
+  // Step 3 ? confirmed signal levels
   double? entry;
   double? sl;
   double? tp;
