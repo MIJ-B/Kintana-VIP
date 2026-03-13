@@ -20,8 +20,6 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
   double? _pinchStartDist;
   double? _pinchStartZoom;
   double? _pinchMidFrac;
-  final List<JPHitArea> _hitAreas = [];
-  int? _activeJPIdx;
   bool _showReplayBar = false;
   final _replayDateCtrl = TextEditingController(text: '2025-01-01');
   bool _replayLoading = false;
@@ -32,6 +30,31 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
     super.initState();
     _pulseCtrl = AnimationController(vsync: this, duration: const Duration(seconds: 2))
       ..repeat(reverse: true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final s = context.read<MarketState>();
+      s.onAlarmStart = _onAlarmStart;
+    });
+  }
+
+  void _onAlarmStart() {
+    // Trigger vibration via HapticFeedback (works on mobile)
+    // Repeat vibration while alarm is ringing
+    _vibrateLoop();
+  }
+
+  void _vibrateLoop() async {
+    final s = context.read<MarketState>();
+    if (!s.alarmRinging) return;
+    HapticFeedback.heavyImpact();
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (mounted) _vibrateLoop();
+  }
+
+  String _ltfLabel(int ltfSeconds) {
+    if (ltfSeconds < 60) return '${ltfSeconds}s';
+    final m = ltfSeconds ~/ 60;
+    if (m < 60) return 'M$m';
+    return 'H${m ~/ 60}';
   }
 
   @override
@@ -113,49 +136,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
           // Divider
           Container(width: 1, height: 18, color: KintanaTheme.b2),
           const SizedBox(width: 5),
-          // JOROpredict toggle
-          GestureDetector(
-            onTap: () {
-              s.toggleJOROpredict();
-              HapticFeedback.lightImpact();
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-              decoration: BoxDecoration(
-                color: s.joropredictActive
-                    ? KintanaTheme.purple.withOpacity(0.2)
-                    : KintanaTheme.card,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                  color: s.joropredictActive
-                      ? KintanaTheme.purple.withOpacity(0.7)
-                      : KintanaTheme.b2,
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.auto_graph_rounded,
-                      size: 10,
-                      color: s.joropredictActive ? KintanaTheme.purpleL : KintanaTheme.t3),
-                  const SizedBox(width: 4),
-                  Text(
-                    'JOROpredict',
-                    style: KintanaTheme.mono(
-                      size: 9,
-                      color: s.joropredictActive ? KintanaTheme.purpleL : KintanaTheme.t3,
-                      weight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(width: 5),
-          Container(width: 1, height: 18, color: KintanaTheme.b2),
-          const SizedBox(width: 5),
-          // Supply & Demand toggle
+          // S&D toggle (JORO icon)
           GestureDetector(
             onTap: () {
               s.toggleSD();
@@ -177,14 +158,14 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
               ),
               child: Row(
                 children: [
-                  Icon(Icons.layers_outlined,
+                  Icon(Icons.auto_awesome_rounded,
                       size: 10,
                       color: s.sdActive
                           ? const Color(0xFFFFD740)
                           : KintanaTheme.t3),
                   const SizedBox(width: 4),
                   Text(
-                    'S&D',
+                    'JORO',
                     style: KintanaTheme.mono(
                       size: 9,
                       color: s.sdActive
@@ -203,7 +184,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
-                        '${s.sdZones.where((z) => z.status.index < 3).length}',
+                        '${s.sdZones.where((z) => z.status.index <= 3).length}',
                         style: KintanaTheme.mono(size: 7.5,
                             color: const Color(0xFFFFD740), weight: FontWeight.bold),
                       ),
@@ -213,6 +194,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
               ),
             ),
           ),
+
           const Spacer(),
           // Replay mode toggle
           GestureDetector(
@@ -547,8 +529,6 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                     yOffset: s.yOffset,
                     mouseX: _mouseX,
                     mouseY: _mouseY,
-                    joropredictActive: s.joropredictActive,
-                    hitAreas: _hitAreas,
                   ),
                   child: Container(),
                 ),
@@ -564,8 +544,8 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
           child: _buildOHLCOverlay(s, candles),
         ),
 
-        // ?? JOROpredict badge
-        if (s.joropredictActive)
+        // S&D status badge
+        if (s.sdActive)
           Positioned(
             top: 8,
             left: 0,
@@ -576,19 +556,85 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                 builder: (_, __) => Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
                   decoration: BoxDecoration(
-                    color: KintanaTheme.purple.withOpacity(0.25),
+                    color: const Color(0xFFFFD740).withOpacity(0.12),
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(
-                      color: KintanaTheme.purple.withOpacity(0.4 + 0.4 * _pulseCtrl.value),
+                      color: const Color(0xFFFFD740).withOpacity(
+                          0.3 + 0.3 * _pulseCtrl.value),
                     ),
-                    boxShadow: [BoxShadow(
-                      color: KintanaTheme.purple.withOpacity(0.1 + 0.2 * _pulseCtrl.value),
-                      blurRadius: 10,
-                    )],
                   ),
                   child: Text(
-                    '⚡ JOROpredict — ${s.jpSignals.where((sg) => sg.confirmed).length} valid / ${s.jpSignals.length} signals',
-                    style: KintanaTheme.mono(size: 9, color: KintanaTheme.purpleL, letterSpacing: 1),
+                    'JORO S&D — ${s.sdZones.where((z) => z.status == SDZoneStatus.confirmed).length} confirmed / ${s.sdZones.length} zones  |  LTF: ${_ltfLabel(s.ltfTf)}',
+                    style: KintanaTheme.mono(size: 9,
+                        color: const Color(0xFFFFD740), letterSpacing: 0.8),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+        // Alarm overlay
+        if (s.alarmRinging)
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _pulseCtrl,
+              builder: (_, __) => Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: const Color(0xFFFF3D57).withOpacity(
+                        0.4 + 0.5 * _pulseCtrl.value),
+                    width: 3,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 40),
+                    child: GestureDetector(
+                      onTap: () {
+                        s.stopAlarm();
+                        HapticFeedback.heavyImpact();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF3D57),
+                          borderRadius: BorderRadius.circular(24),
+                          boxShadow: [BoxShadow(
+                            color: const Color(0xFFFF3D57).withOpacity(
+                                0.5 + 0.4 * _pulseCtrl.value),
+                            blurRadius: 20,
+                          )],
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('SIGNAL CONFIRMED',
+                                style: KintanaTheme.mono(size: 10,
+                                    color: Colors.white, weight: FontWeight.bold,
+                                    letterSpacing: 1.5)),
+                            const SizedBox(height: 2),
+                            Text(s.alarmReason,
+                                style: KintanaTheme.mono(size: 8,
+                                    color: Colors.white.withOpacity(0.9))),
+                            const SizedBox(height: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 12, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text('TAP TO STOP ALARM',
+                                  style: KintanaTheme.mono(size: 8,
+                                      color: Colors.white, weight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -658,14 +704,6 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
   }
 
   void _onChartTap(Offset pos, MarketState s, List<Candle> candles) {
-    // Check JOROpredict hit areas
-    for (final h in _hitAreas) {
-      if ((Offset(h.cx, h.cy) - pos).distance < h.radius) {
-        setState(() => _activeJPIdx = _activeJPIdx == h.sigIdx ? null : h.sigIdx);
-        HapticFeedback.mediumImpact();
-        return;
-      }
-    }
-    setState(() => _activeJPIdx = null);
+    // Tap on chart - future: tap SD zone for details
   }
 }
