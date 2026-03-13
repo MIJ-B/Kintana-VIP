@@ -526,7 +526,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                     )],
                   ),
                   child: Text(
-                    '⚡ JOROpredict — ${s.jpSignals.where((sg) => sg.confirmed).length} confirmed / ${s.jpSignals.length} total',
+                    '⚡ JOROpredict — ${s.jpSignals.where((sg) => sg.confirmed).length} valid / ${s.jpSignals.length} signals',
                     style: KintanaTheme.mono(size: 9, color: KintanaTheme.purpleL, letterSpacing: 1),
                   ),
                 ),
