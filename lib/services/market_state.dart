@@ -233,6 +233,7 @@ class MarketState extends ChangeNotifier {
       }
       _runTrailingStop(price!);
       _checkPendingSignals(price!);
+      _checkSDZones(price!);
       if (joropredictActive) computeJPSignals();
       notifyListeners();
     }
@@ -242,6 +243,7 @@ class MarketState extends ChangeNotifier {
       zoom   = min(60, candles.length.toDouble());
       offset = max(0, candles.length - zoom.round()).toDouble();
       if (joropredictActive) computeJPSignals();
+      if (sdActive) detectSDZones();
       notifyListeners();
     }
     if (d['ohlc'] != null) {
@@ -799,6 +801,7 @@ class MarketState extends ChangeNotifier {
     jpAlarm       = p.getBool('jpAlarm')      ?? false;
     final tradesJson = p.getString('kintana_trades') ?? '[]';
     trades = (jsonDecode(tradesJson) as List).map((j) => Trade.fromJson(j as Map<String, dynamic>)).toList();
+    await _loadSDStats();
     connect();
     notifyListeners();
   }
@@ -818,6 +821,215 @@ class MarketState extends ChangeNotifier {
     await p.setDouble('jpTPAtr',    jpTPAtr);
     await p.setDouble('jpSLAtr',    jpSLAtr);
     await p.setBool('jpAlarm',      jpAlarm);
+  }
+
+  // ══════════════════════════════════════════════
+  // ── SUPPLY & DEMAND ENGINE
+  // ══════════════════════════════════════════════
+
+  void toggleSD() {
+    sdActive = !sdActive;
+    if (sdActive) {
+      detectSDZones();
+    } else {
+      sdZones.clear();
+    }
+    notifyListeners();
+  }
+
+  // ── Step 1: Detect Supply & Demand zones from candles
+  // Supply zone = strong bearish origin candle (large body down, large move after)
+  // Demand zone = strong bullish origin candle (large body up, large move after)
+  void detectSDZones() {
+    sdZones.clear();
+    final c = getCandles();
+    if (c.length < 10) return;
+    final n = c.length;
+
+    // ATR for sizing
+    double atrVal = 0;
+    if (n >= 10) {
+      for (int i = n - 10; i < n; i++) {
+        atrVal += max(c[i].high - c[i].low,
+          max((c[i].high - (i > 0 ? c[i-1].close : c[i].open)).abs(),
+              (c[i].low  - (i > 0 ? c[i-1].close : c[i].open)).abs()));
+      }
+      atrVal /= 10;
+    }
+    if (atrVal == 0) atrVal = (c.last.high - c.last.low);
+
+    for (int i = 2; i < n - 2; i++) {
+      final cv   = c[i];
+      final body = (cv.close - cv.open).abs();
+      final range = cv.high - cv.low;
+
+      // Strong candle = body > 60% of range AND body > 0.8× ATR
+      final isStrong = body > range * 0.6 && body > atrVal * 0.8;
+      if (!isStrong) continue;
+
+      // Check momentum after: next 2 candles continue in same direction
+      final next1 = c[i + 1];
+      final next2 = c[i + 2];
+
+      // ── SUPPLY zone (bearish origin)
+      if (cv.close < cv.open) {
+        final momentum = (c[i].close - next2.low).abs();
+        if (momentum < atrVal * 0.5) continue; // not enough move
+
+        // Zone = from close to open of origin candle (body)
+        final zHigh = max(cv.open, cv.close);
+        final zLow  = min(cv.open, cv.close);
+
+        // Check zone not already tested (price came back and closed inside)
+        bool tested = false;
+        for (int j = i + 1; j < n; j++) {
+          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
+        }
+        if (tested) continue;
+
+        sdZones.add(SDZone(
+          id: _sdIdCounter++,
+          type: SDZoneType.supply,
+          zoneHigh: zHigh,
+          zoneLow:  zLow,
+          originIdx: i,
+          originClose: cv.close,
+        ));
+      }
+
+      // ── DEMAND zone (bullish origin)
+      if (cv.close > cv.open) {
+        final momentum = (next2.high - c[i].close).abs();
+        if (momentum < atrVal * 0.5) continue;
+
+        final zHigh = max(cv.open, cv.close);
+        final zLow  = min(cv.open, cv.close);
+
+        bool tested = false;
+        for (int j = i + 1; j < n; j++) {
+          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
+        }
+        if (tested) continue;
+
+        sdZones.add(SDZone(
+          id: _sdIdCounter++,
+          type: SDZoneType.demand,
+          zoneHigh: zHigh,
+          zoneLow:  zLow,
+          originIdx: i,
+          originClose: cv.close,
+        ));
+      }
+    }
+    notifyListeners();
+  }
+
+  // ── Step 2 & 3: Check price entering zone + LTF confirmation
+  void _checkSDZones(double currentPrice) {
+    if (!sdActive || sdZones.isEmpty) return;
+    final c   = getCandles();
+    if (c.isEmpty) return;
+    final atr = calcATR();
+    bool changed = false;
+
+    for (final zone in sdZones) {
+      if (zone.status == SDZoneStatus.hitTP ||
+          zone.status == SDZoneStatus.hitSL ||
+          zone.status == SDZoneStatus.expired) continue;
+
+      // ── Step 2: Price enters zone
+      if (zone.status == SDZoneStatus.waiting && zone.priceInZone(currentPrice)) {
+        zone.status = SDZoneStatus.entered;
+        changed = true;
+      }
+
+      // ── LTF confirmation (simulated on HTF candles)
+      // Confirmation = rejection candle inside zone:
+      // Demand: bullish pin bar or engulfing while price in zone
+      // Supply: bearish pin bar or engulfing while price in zone
+      if (zone.status == SDZoneStatus.entered && !zone.ltfConfirmed) {
+        final last = c.last;
+        final inZone = last.low <= zone.zoneHigh && last.high >= zone.zoneLow;
+        if (inZone) {
+          final body  = (last.close - last.open).abs();
+          final range = last.high - last.low;
+          final isBull = last.close > last.open;
+          final isBear = last.close < last.open;
+
+          // Rejection = body < 40% of range (pin bar) or strong reversal body
+          final isPinBar    = body < range * 0.4;
+          final isEngulfing = body > range * 0.7;
+          final isReversal  = (zone.isBuy && (isPinBar || (isEngulfing && isBull))) ||
+                              (zone.isSell && (isPinBar || (isEngulfing && isBear)));
+
+          if (isReversal) {
+            zone.ltfConfirmed  = true;
+            zone.ltfConfirmIdx = c.length - 1;
+
+            // ── Step 3: Set entry / SL / TP
+            if (zone.isBuy) {
+              zone.entry = zone.zoneLow + zone.zoneSize * 0.5; // mid zone
+              zone.sl    = zone.zoneLow - atr * 0.3;           // below zone
+              zone.tp    = zone.entry   + atr * 2.5;           // 2.5R TP
+            } else {
+              zone.entry = zone.zoneHigh - zone.zoneSize * 0.5;
+              zone.sl    = zone.zoneHigh + atr * 0.3;
+              zone.tp    = zone.entry    - atr * 2.5;
+            }
+            zone.status = SDZoneStatus.confirmed;
+            changed = true;
+          }
+        }
+      }
+
+      // ── Check TP / SL hit
+      if (zone.status == SDZoneStatus.confirmed &&
+          zone.entry != null && zone.sl != null && zone.tp != null) {
+        bool hitTP = false, hitSL = false;
+        if (zone.isBuy) {
+          hitTP = currentPrice >= zone.tp!;
+          hitSL = currentPrice <= zone.sl!;
+        } else {
+          hitTP = currentPrice <= zone.tp!;
+          hitSL = currentPrice >= zone.sl!;
+        }
+
+        if (hitTP || hitSL) {
+          zone.won    = hitTP;
+          zone.status = hitTP ? SDZoneStatus.hitTP : SDZoneStatus.hitSL;
+          if (hitTP) sdWins++; else sdLosses++;
+          // Prepare win rate message for JORO
+          sdLastResultMsg =
+            '${hitTP ? "✅ TP HIT" : "❌ SL HIT"} — ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}
+'
+            '📊 Win Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
+          changed = true;
+          _saveSDStats();
+        }
+      }
+    }
+
+    // Remove expired zones (hit TP or SL — keep for display briefly)
+    if (changed) notifyListeners();
+  }
+
+  Future<void> _saveSDStats() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt('sdWins',   sdWins);
+    await p.setInt('sdLosses', sdLosses);
+  }
+
+  Future<void> _loadSDStats() async {
+    final p = await SharedPreferences.getInstance();
+    sdWins   = p.getInt('sdWins')   ?? 0;
+    sdLosses = p.getInt('sdLosses') ?? 0;
+  }
+
+  void clearSDResult(int zoneId) {
+    sdZones.removeWhere((z) =>
+      z.id == zoneId &&
+      (z.status == SDZoneStatus.hitTP || z.status == SDZoneStatus.hitSL));
+    notifyListeners();
   }
 
   @override
