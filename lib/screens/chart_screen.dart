@@ -152,6 +152,67 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
               ),
             ),
           ),
+          const SizedBox(width: 5),
+          Container(width: 1, height: 18, color: KintanaTheme.b2),
+          const SizedBox(width: 5),
+          // Supply & Demand toggle
+          GestureDetector(
+            onTap: () {
+              s.toggleSD();
+              HapticFeedback.lightImpact();
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: s.sdActive
+                    ? const Color(0xFFFFD740).withOpacity(0.15)
+                    : KintanaTheme.card,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: s.sdActive
+                      ? const Color(0xCCFFD740)
+                      : KintanaTheme.b2,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.layers_outlined,
+                      size: 10,
+                      color: s.sdActive
+                          ? const Color(0xFFFFD740)
+                          : KintanaTheme.t3),
+                  const SizedBox(width: 4),
+                  Text(
+                    'S&D',
+                    style: KintanaTheme.mono(
+                      size: 9,
+                      color: s.sdActive
+                          ? const Color(0xFFFFD740)
+                          : KintanaTheme.t3,
+                      weight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  if (s.sdActive && s.sdZones.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFD740).withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '${s.sdZones.where((z) => z.status.index < 3).length}',
+                        style: KintanaTheme.mono(size: 7.5,
+                            color: const Color(0xFFFFD740), weight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
           const Spacer(),
           // Replay mode toggle
           GestureDetector(
