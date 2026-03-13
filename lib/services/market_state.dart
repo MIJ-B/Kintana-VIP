@@ -122,6 +122,15 @@ class MarketState extends ChangeNotifier {
   String groqKey = '';
   String groqModel = 'llama-3.3-70b-versatile';
 
+  // -- Supply & Demand
+  bool sdActive = false;
+  List<SDZone> sdZones = [];
+  int _sdIdCounter = 1;
+  int sdWins = 0;
+  int sdLosses = 0;
+  double get sdWinRate => (sdWins + sdLosses) == 0 ? 0 : sdWins / (sdWins + sdLosses) * 100;
+  String? sdLastResultMsg;
+
   MarketState() { _loadPrefs(); }
 
   // --------------------------------------------?
@@ -999,10 +1008,7 @@ class MarketState extends ChangeNotifier {
           zone.status = hitTP ? SDZoneStatus.hitTP : SDZoneStatus.hitSL;
           if (hitTP) sdWins++; else sdLosses++;
           // Prepare win rate message for JORO
-          sdLastResultMsg =
-            '${hitTP ? "[OK] TP HIT" : "[X] SL HIT"} - ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}
-'
-            '[stats] Win Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
+          sdLastResultMsg = '${hitTP ? "TP HIT" : "SL HIT"} - ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}\nWin Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
           changed = true;
           _saveSDStats();
         }
