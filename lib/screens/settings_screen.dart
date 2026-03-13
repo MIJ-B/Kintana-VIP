@@ -194,53 +194,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Widget _buildJOROpredict(MarketState s) {
     return _section(
-      title: '⚡ JOROPREDICT v3',
+      title: 'JORO S&D ENGINE',
       child: GlassCard(
         child: Column(
           children: [
             _settingsRow(
-              icon: '🎯',
-              iconColor: KintanaTheme.purple.withOpacity(0.15),
-              title: 'Auto TP/SL',
-              subtitle: s.jpAutoTPSL ? 'Active — auto TP/SL via ATR' : 'Inactive — tsy mametraka TP/SL',
-              trailing: _toggle(s.jpAutoTPSL, () {
-                s.jpAutoTPSL = !s.jpAutoTPSL;
-                s.saveSettings();
+              icon: '📊',
+              iconColor: const Color(0xFFFFD740).withOpacity(0.15),
+              title: 'Supply & Demand',
+              subtitle: s.sdActive
+                  ? 'Active — ${s.sdZones.length} zones detected'
+                  : 'Inactive — tap JORO on chart to activate',
+              trailing: _toggle(s.sdActive, () {
+                s.toggleSD();
                 setState(() {});
               }),
             ),
-            if (s.jpAutoTPSL) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(13, 4, 13, 10),
-                child: Column(
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(child: _numInput('TP (× ATR)', s.jpTPAtr, (v) { s.jpTPAtr = v; s.saveSettings(); })),
-                        const SizedBox(width: 8),
-                        Expanded(child: _numInput('SL (× ATR)', s.jpSLAtr, (v) { s.jpSLAtr = v; s.saveSettings(); })),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'TP = prix + (ATR × ratio)  •  SL = prix − (ATR × ratio)',
-                      style: KintanaTheme.mono(size: 9, color: KintanaTheme.t3),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            const Divider(color: KintanaTheme.b1, height: 1),
+            _settingsRow(
+              icon: '📈',
+              iconColor: KintanaTheme.green.withOpacity(0.15),
+              title: 'Win Rate',
+              subtitle: '${s.sdWinRate.toStringAsFixed(1)}%  (${s.sdWins}W / ${s.sdLosses}L)',
+              trailing: const SizedBox(),
+            ),
             const Divider(color: KintanaTheme.b1, height: 1),
             _settingsRow(
               icon: '🔔',
               iconColor: KintanaTheme.yellow.withOpacity(0.15),
               title: 'Signal Alarm',
-              subtitle: s.jpAlarm ? 'Active — notification + vibration' : 'Inactive — mangina',
-              trailing: _toggle(s.jpAlarm, () {
-                s.jpAlarm = !s.jpAlarm;
-                s.saveSettings();
-                setState(() {});
-              }),
+              subtitle: 'Auto-alarm when LTF confirms entry',
+              trailing: const SizedBox(),
             ),
           ],
         ),
@@ -326,7 +310,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         Text('VIP ⭐ KINTANA v4.0 • DERIV APP ID: 129691',
             style: KintanaTheme.mono(size: 9, color: KintanaTheme.t3)),
         const SizedBox(height: 4),
-        Text('JORO AI + AMD + JOROpredict + Replay Advanced',
+        Text('JORO AI + Supply & Demand + LTF Auto-confirmation',
             style: KintanaTheme.mono(size: 8, color: KintanaTheme.t3)),
       ],
     );
