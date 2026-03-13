@@ -58,11 +58,30 @@ class _JoroScreenState extends State<JoroScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final s = context.read<MarketState>();
       _selectedModel = s.groqModel;
+      // Listen for S&D win/loss results
+      s.addListener(_onMarketStateChange);
     });
+  }
+
+  void _onMarketStateChange() {
+    final s = context.read<MarketState>();
+    if (s.sdLastResultMsg != null) {
+      final msg = s.sdLastResultMsg!;
+      s.sdLastResultMsg = null;
+      setState(() {
+        _msgs.add(_ChatMsg(role: _Role.ai, text: msg));
+      });
+      _scrollDown();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        try { context.read<MarketState>().removeListener(_onMarketStateChange); } catch (_) {}
+      }
+    });
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
