@@ -603,13 +603,14 @@ class MarketState extends ChangeNotifier {
     double atrVal = calcATR(src: c);
     if (atrVal == 0) atrVal = c.last.high - c.last.low;
 
-    for (int i = 2; i < n - 2; i++) {
+    for (int i = 1; i < n - 1; i++) {
       final cv    = c[i];
       final body  = (cv.close - cv.open).abs();
       final range = cv.high - cv.low;
       if (range == 0) continue;
 
-      final isStrong = body > range * 0.6 && body > atrVal * 0.8;
+      // Relaxed: strong if body dominant OR significant size
+      final isStrong = (body > range * 0.45) || (body > atrVal * 0.5);
       if (!isStrong) continue;
 
       final next2 = c[i + 2];
@@ -617,14 +618,9 @@ class MarketState extends ChangeNotifier {
       // -- SUPPLY zone (bearish origin)
       if (cv.close < cv.open) {
         final momentum = (cv.close - next2.low).abs();
-        if (momentum < atrVal * 0.5) continue;
+        if (momentum < atrVal * 0.2) continue;
         final zHigh = max(cv.open, cv.close);
         final zLow  = min(cv.open, cv.close);
-        bool tested = false;
-        for (int j = i + 1; j < n; j++) {
-          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
-        }
-        if (tested) continue;
         sdZones.add(SDZone(
           id: _sdIdCounter++, type: SDZoneType.supply,
           zoneHigh: zHigh, zoneLow: zLow,
@@ -635,20 +631,19 @@ class MarketState extends ChangeNotifier {
       // -- DEMAND zone (bullish origin)
       if (cv.close > cv.open) {
         final momentum = (next2.high - cv.close).abs();
-        if (momentum < atrVal * 0.5) continue;
+        if (momentum < atrVal * 0.2) continue;
         final zHigh = max(cv.open, cv.close);
         final zLow  = min(cv.open, cv.close);
-        bool tested = false;
-        for (int j = i + 1; j < n; j++) {
-          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
-        }
-        if (tested) continue;
         sdZones.add(SDZone(
           id: _sdIdCounter++, type: SDZoneType.demand,
           zoneHigh: zHigh, zoneLow: zLow,
           originIdx: i, originClose: cv.close,
         ));
       }
+    }
+    // Keep only the 8 most recent zones to avoid clutter
+    if (sdZones.length > 8) {
+      sdZones = sdZones.sublist(sdZones.length - 8);
     }
     notifyListeners();
   }
