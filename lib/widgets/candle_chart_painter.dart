@@ -1,1044 +1,704 @@
-import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:flutter/material.dart';
 import '../models/models.dart';
+import '../services/market_state.dart';
+import '../theme/kintana_theme.dart';
 
-const int kDerivAppId = 129691;
-
-// -- Hybrid Signal Situation
-enum JPSituation {
-  pureWick,      // S1: wick only outside ACC, body inside -> 85%
-  bodyRevert,    // S2: body outside but N+1 reverts inside -> 70%
-  breakout,      // S3: body outside + continues -> SKIP 20%
-  fvgRetest,     // S4: Fair Value Gap -> wait retest -> 65%
-  ifvg,          // S5: Inverse FVG -> trap -> 80%
+// Hit area pour les signals JP
+class JPHitArea {
+  final double cx, cy, radius;
+  final int sigIdx;
+  const JPHitArea({required this.cx, required this.cy, required this.radius, required this.sigIdx});
 }
 
-// -- Signal AMD (hybrid)
-class JPSignal {
-  final int idx;
-  final String type;        // 'BUY' or 'SELL'
-  final double price;
-  final JPPhase phase;
-  final bool confirmed;
-  final String filterNote;
-  final JPSituation situation;
-  final int confidence;     // 0-100
-  final String entryTiming; // 'aggressive' | 'conservative' | 'wait_retest' | 'skip'
-  final double? fvgLow;     // for S4/S5 FVG zone
-  final double? fvgHigh;
+class CandleChartPainter extends CustomPainter {
+  final MarketState state;
+  final List<Candle> candles;
+  final double zoom;
+  final double offset;
+  final double yOffset;
+  final double? mouseX;
+  final double? mouseY;
+  final bool joropredictActive;
+  final List<JPHitArea> hitAreas;
 
-  const JPSignal({
-    required this.idx,
-    required this.type,
-    required this.price,
-    required this.phase,
-    this.confirmed = true,
-    this.filterNote = '',
-    this.situation = JPSituation.pureWick,
-    this.confidence = 85,
-    this.entryTiming = 'aggressive',
-    this.fvgLow,
-    this.fvgHigh,
+  static const double padTop    = 10;
+  static const double padRight  = 66;
+  static const double padBottom = 30;
+  static const double padLeft   = 4;
+
+  CandleChartPainter({
+    required this.state,
+    required this.candles,
+    required this.zoom,
+    required this.offset,
+    required this.yOffset,
+    this.mouseX,
+    this.mouseY,
+    required this.joropredictActive,
+    required this.hitAreas,
   });
-}
 
-// -- Phase AMD d?tect?e
-class JPPhase {
-  final AccZone acc;
-  final int manipIdx;
-  final String manipDir; // 'up' or 'down'
-  final String distDir;  // 'up' or 'down'
-  const JPPhase({required this.acc, required this.manipIdx, required this.manipDir, required this.distDir});
-}
-
-// -- Accumulation zone
-class AccZone {
-  final int startIdx;
-  final int endIdx;
-  final double high;
-  final double low;
-  final double mid;
-  final double atr;
-  const AccZone({required this.startIdx, required this.endIdx, required this.high, required this.low, required this.mid, required this.atr});
-}
-
-class MarketState extends ChangeNotifier {
-  // -- Symbol
-  String sym = 'frxXAUUSD';
-  String sname = 'Gold / US Dollar';
-  int tf = 900;
-
-  // -- Prices
-  double? price;
-  double? prevPrice;
-  double? open0;
-  double? bidPrice;
-  double? askPrice;
-
-  // -- Candles
-  List<Candle> candles = [];
-
-  // -- View
-  double zoom = 60;
-  double offset = 0;
-  double yOffset = 0;
-
-  // -- WS
-  WebSocketChannel? _ws;
-  bool wsOk = false;
-  bool _reconnecting = false;
-  int _rid = 1;
-
-  // -- Replay
-  bool isReplay = false;
-  List<Candle> replayAll = [];
-  List<_ReplayTick> replayTicks = [];
-  int replayIdx = 0;
-  int replayTickIdx = 0;
-  bool replayPlaying = false;
-  Timer? replayTimer;
-  int replaySpeed = 400;
-
-  // -- Trades
-  List<Trade> trades = [];
-
-  // -- JOROpredict (GainzAlpha v3 AMD Engine ? exact copy from HTML)
-  bool joropredictActive = false;
-  List<JPSignal> jpSignals = [];      // gainzSignals
-  List<JPPhase>  jpPhases  = [];      // _gainzPhases
-  JPSignal? activeJPSig;              // _activeGainzSig
-
-  // -- Settings
-  bool trailingStop = false;
-  double trailingDist = 0.5;
-  bool jpAutoTPSL = false;
-  double jpTPAtr = 2.0;
-  double jpSLAtr = 1.0;
-  bool jpAlarm = false;
-  String groqKey = '';
-  String groqModel = 'llama-3.3-70b-versatile';
-
-  MarketState() { _loadPrefs(); }
-
-  // --------------------------------------------?
-  // -- Candles helpers
-  // --------------------------------------------?
-  List<Candle> getCandles() {
-    if (!isReplay) return candles;
-    if (replayTicks.isEmpty) {
-      return replayAll.sublist(0, replayIdx.clamp(0, replayAll.length));
-    }
-    final tickIdx = replayTickIdx.clamp(0, replayTicks.length - 1);
-    final curTick = replayTicks[tickIdx];
-    final candleIdx = curTick.candleIdx.clamp(0, replayAll.length - 1);
-    final done = replayAll.sublist(0, candleIdx);
-    final base = replayAll[candleIdx];
-    final candleTicks = replayTicks
-        .sublist(0, tickIdx + 1)
-        .where((t) => t.candleIdx == candleIdx)
-        .toList();
-    if (candleTicks.isEmpty) return [...done, base];
-    final prices = candleTicks.map((t) => t.price).toList();
-    final liveCand = Candle(
-      time: base.time, open: base.open,
-      high: prices.reduce(max), low: prices.reduce(min), close: prices.last,
-    );
-    return [...done, liveCand];
+  // ?? p2y / y2p ? exact copy from HTML
+  double p2y(double price, double mn, double mx, double H) {
+    final r = mx - mn == 0 ? 1.0 : mx - mn;
+    return padTop + (1 - (price - mn) / r) * (H - padTop - padBottom);
   }
 
-  // -- ATR(10) ? exact copy from HTML _calcATRForCandles
-  double calcATR({int period = 10}) {
-    final c = getCandles();
-    if (c.length < 2) return 0;
-    final p = min(period, c.length - 1);
-    double s = 0;
-    for (int i = c.length - p; i < c.length; i++) {
-      s += max(c[i].high - c[i].low,
-          max((c[i].high - c[i-1].close).abs(), (c[i].low - c[i-1].close).abs()));
-    }
-    return s / p;
-  }
-
-  void clampView(List<Candle> c) {
-    final n = c.length;
-    if (n == 0) { zoom = 60; offset = 0; return; }
-    zoom = zoom.clamp(5.0, n.toDouble());
-    final maxOffset = max(0, n - 3).toDouble();
-    offset = offset.clamp(0.0, maxOffset);
-  }
-
-  ({int s, int e, int count}) visibleRange() {
-    final c = getCandles();
-    if (c.isEmpty) return (s: 0, e: 0, count: 0);
-    clampView(c);
-    final s = offset.round().clamp(0, c.length - 1);
-    final e = (s + zoom.round() - 1).clamp(s, c.length - 1);
-    return (s: s, e: e, count: e - s + 1);
-  }
-
-  // --------------------------------------------?
-  // -- WebSocket
-  // --------------------------------------------?
-  void connect() {
-    if (isReplay) return;
-    _ws?.sink.close();
-    wsOk = false;
-    _ws = WebSocketChannel.connect(
-      Uri.parse('wss://ws.binaryws.com/websockets/v3?app_id=$kDerivAppId'),
-    );
-    _ws!.stream.listen(
-      (raw) => _onMsg(jsonDecode(raw as String)),
-      onDone: _onClose, onError: (_) => _onClose(),
-    );
-    _send({'ticks': sym, 'subscribe': 1});
-    _send({'ticks_history': sym, 'end': 'latest', 'count': 300, 'style': 'candles', 'granularity': tf});
-    _send({'ticks_history': sym, 'end': 'latest', 'count': 1,   'style': 'candles', 'granularity': tf, 'subscribe': 1});
-    wsOk = true;
-    notifyListeners();
-  }
-
-  void _send(Map<String, dynamic> obj) {
-    if (_ws == null) return;
-    obj['req_id'] = _rid++;
-    _ws!.sink.add(jsonEncode(obj));
-  }
-
-  void _onClose() {
-    wsOk = false;
-    notifyListeners();
-    if (!isReplay && !_reconnecting) {
-      _reconnecting = true;
-      Future.delayed(const Duration(seconds: 3), () { _reconnecting = false; connect(); });
-    }
-  }
-
-  void _onMsg(Map<String, dynamic> d) {
-    if (d['error'] != null) return;
-    if (d['tick'] != null) {
-      final t = d['tick'] as Map<String, dynamic>;
-      prevPrice = price;
-      price = (t['quote'] as num).toDouble();
-      open0 ??= price;
-      bidPrice = t['bid'] != null ? (t['bid'] as num).toDouble() : null;
-      askPrice = t['ask'] != null ? (t['ask'] as num).toDouble() : null;
-      if (candles.isNotEmpty) {
-        final l = candles.last;
-        l.close = price!;
-        if (price! > l.high) l.high = price!;
-        if (price! < l.low)  l.low  = price!;
-      }
-      _runTrailingStop(price!);
-      _checkPendingSignals(price!);
-      _checkSDZones(price!);
-      if (joropredictActive) computeJPSignals();
-      notifyListeners();
-    }
-    if (d['candles'] != null) {
-      candles = (d['candles'] as List).map((c) => Candle.fromMap(c as Map<String, dynamic>)).toList();
-      open0 = candles.isNotEmpty ? candles.first.open : null;
-      zoom   = min(60, candles.length.toDouble());
-      offset = max(0, candles.length - zoom.round()).toDouble();
-      if (joropredictActive) computeJPSignals();
-      if (sdActive) detectSDZones();
-      notifyListeners();
-    }
-    if (d['ohlc'] != null) {
-      final o = d['ohlc'] as Map<String, dynamic>;
-      final epoch = (o['open_time'] as num).toInt();
-      final cn = Candle(
-        time: epoch,
-        open:  double.parse(o['open'].toString()),
-        high:  double.parse(o['high'].toString()),
-        low:   double.parse(o['low'].toString()),
-        close: double.parse(o['close'].toString()),
-      );
-      final idx = candles.indexWhere((c) => c.time == epoch);
-      if (idx >= 0) candles[idx] = cn;
-      else { candles.add(cn); if (candles.length > 500) candles.removeAt(0); }
-      if (joropredictActive) computeJPSignals();
-      notifyListeners();
-    }
-  }
-
-  void changeSymbol(Market m) {
-    sym = m.symbol; sname = m.name; offset = 0;
-    price = null; prevPrice = null; open0 = null; candles.clear();
-    jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
-    if (isReplay) { replayAll.clear(); replayIdx = 0; notifyListeners(); return; }
-    notifyListeners();
-    if (wsOk) {
-      _send({'forget_all': 'ticks'});
-      _send({'forget_all': 'candles'});
-      Future.delayed(const Duration(milliseconds: 200), () {
-        _send({'ticks': sym, 'subscribe': 1});
-        _send({'ticks_history': sym, 'end': 'latest', 'count': 300, 'style': 'candles', 'granularity': tf});
-        _send({'ticks_history': sym, 'end': 'latest', 'count': 1,   'style': 'candles', 'granularity': tf, 'subscribe': 1});
-      });
-    }
-  }
-
-  void changeTimeframe(int newTf) {
-    tf = newTf; candles.clear(); offset = 0;
-    jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
-    notifyListeners();
-    if (!isReplay && wsOk) {
-      _send({'forget_all': 'candles'});
-      Future.delayed(const Duration(milliseconds: 200), () {
-        _send({'ticks_history': sym, 'end': 'latest', 'count': 300, 'style': 'candles', 'granularity': tf});
-        _send({'ticks_history': sym, 'end': 'latest', 'count': 1,   'style': 'candles', 'granularity': tf, 'subscribe': 1});
-      });
-    }
-  }
-
-  // --------------------------------------------?
-  // -- Zoom / Pan
-  // --------------------------------------------?
-  void zoomAround(double factor, double pivotScreenFraction) {
-    final c = getCandles();
-    if (c.isEmpty) return;
-    clampView(c);
-    final pivotCandle = offset + pivotScreenFraction * zoom;
-    final newZoom = (zoom / factor).clamp(5.0, c.length.toDouble()) as double;
-    offset = pivotCandle - pivotScreenFraction * newZoom;
-    zoom = newZoom;
-    clampView(c);
-    notifyListeners();
-  }
-
-  void zoomIn(double f)  => zoomAround(1.4, f);
-  void zoomOut(double f) => zoomAround(1 / 1.4, f);
-  void zoomReset() {
-    final c = getCandles();
-    zoom   = min(60, c.length.toDouble());
-    offset = max(0, c.length - zoom.round()).toDouble();
-    yOffset = 0;
-    notifyListeners();
-  }
-
-  void panLeft() {
-    final step = max(1, (zoom * 0.15).round());
-    offset = max(0.0, offset - step);
-    notifyListeners();
-  }
-  void panRight() {
-    final c = getCandles();
-    final step = max(1, (zoom * 0.15).round());
-    offset = min((c.length - zoom.round()).toDouble(), offset + step);
-    notifyListeners();
-  }
-
-  // --------------------------------------------?
-  // -- Replay
-  // --------------------------------------------?
-  void switchToReplay() {
-    isReplay = true; _stopReplay();
-    replayAll.clear(); replayTicks.clear();
-    replayIdx = 0; replayTickIdx = 0;
-    jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
-    _ws?.sink.close(); wsOk = false;
-    notifyListeners();
-  }
-
-  void switchToLive() {
-    isReplay = false; _stopReplay();
-    replayAll.clear(); candles.clear(); offset = 0;
-    jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
-    connect(); notifyListeners();
-  }
-
-  Future<void> loadReplayData(String dateStr) async {
-    final dt = DateTime.parse('${dateStr}T00:00:00Z');
-    final startEpoch = dt.millisecondsSinceEpoch ~/ 1000;
-    final endEpoch   = startEpoch + 86400;
-    replayAll.clear(); replayTicks.clear();
-    replayIdx = 0; replayTickIdx = 0; offset = 0;
-    notifyListeners();
-    final ws   = WebSocketChannel.connect(Uri.parse('wss://ws.binaryws.com/websockets/v3?app_id=$kDerivAppId'));
-    final comp = Completer<void>();
-    ws.stream.listen((raw) {
-      final d = jsonDecode(raw as String) as Map<String, dynamic>;
-      if (d['error'] != null) { comp.completeError(d['error']['message']); return; }
-      if (d['candles'] != null) {
-        final loaded = (d['candles'] as List).map((c) => Candle.fromMap(c as Map<String, dynamic>)).toList();
-        replayAll   = loaded;
-        replayTicks = _generateTicks(loaded);
-        replayIdx   = 0; replayTickIdx = 0;
-        zoom   = min(60, loaded.length.toDouble());
-        offset = 0;
-        if (joropredictActive) computeJPSignals();
-        notifyListeners();
-        ws.sink.close(); comp.complete();
-      }
-    }, onError: (e) => comp.completeError(e));
-    ws.sink.add(jsonEncode({'ticks_history': sym, 'start': startEpoch, 'end': endEpoch, 'count': 1000, 'style': 'candles', 'granularity': tf, 'req_id': 1}));
-    await comp.future;
-  }
-
-  // -- Generate ticks from candles (exact copy from HTML generateTicksFromCandles)
-  List<_ReplayTick> _generateTicks(List<Candle> candles) {
-    final ticks = <_ReplayTick>[];
-    final rng   = Random();
-    for (int ci = 0; ci < candles.length; ci++) {
-      final c   = candles[ci];
-      final n   = 15 + rng.nextInt(6); // 15-20 ticks
-      final bull = c.close >= c.open;
-      final p0  = c.open;
-      final p1  = bull ? c.open - (c.open - c.low) * 0.3 : c.open + (c.high - c.open) * 0.3;
-      final p2  = bull ? c.high : c.low;
-      final p3  = bull ? c.low  : c.high;
-      final p4  = c.close;
-      final keyPts = [p0, p1, p2, p3, p4];
-      final seg = (n / (keyPts.length - 1)).floor();
-      int ti = 0;
-      for (int si = 0; si < keyPts.length - 1; si++) {
-        final from  = keyPts[si];
-        final to    = keyPts[si + 1];
-        final steps = si == keyPts.length - 2 ? n - ti : seg;
-        for (int s = 0; s < steps && ti < n; s++, ti++) {
-          final t     = steps > 1 ? s / (steps - 1) : 0.0;
-          final noise = (rng.nextDouble() - 0.5) * (c.high - c.low) * 0.04;
-          double px   = from + (to - from) * t + noise;
-          px = px.clamp(c.low, c.high);
-          ticks.add(_ReplayTick(time: c.time + (s * (tf / n)).floor(), price: px, candleIdx: ci));
-        }
-      }
-      if (ticks.isNotEmpty && ticks.last.candleIdx == ci) {
-        ticks[ticks.length - 1] = _ReplayTick(time: ticks.last.time, price: c.close, candleIdx: ci);
-      }
-    }
-    return ticks;
-  }
-
-  void toggleReplayPlay() => replayPlaying ? _stopReplay() : _startReplay();
-
-  void _startReplay() {
-    if (replayTickIdx >= replayTicks.length - 1) replayTickIdx = 0;
-    replayPlaying = true; notifyListeners(); _playTick();
-  }
-
-  void _stopReplay() {
-    replayPlaying = false; replayTimer?.cancel(); notifyListeners();
-  }
-
-  void _playTick() {
-    if (!replayPlaying) return;
-    _advanceTick();
-    if (replayPlaying) replayTimer = Timer(Duration(milliseconds: (replaySpeed / 4).round()), _playTick);
-  }
-
-  void _advanceTick() {
-    if (replayTicks.isEmpty) return;
-    if (replayTickIdx < replayTicks.length - 1) {
-      replayTickIdx++;
-      final tick = replayTicks[replayTickIdx];
-      replayIdx = tick.candleIdx + 1;
-      final candlePrice = replayAll[tick.candleIdx].close;
-      _runTrailingStop(candlePrice);
-      _checkPendingSignals(candlePrice);
-      if (joropredictActive) computeJPSignals();
-    } else {
-      _stopReplay();
-    }
-    notifyListeners();
-  }
-
-  void replaySeek(double pct) {
-    replayTickIdx = (pct * (replayTicks.length - 1)).round().clamp(0, max(0, replayTicks.length - 1));
-    if (replayTicks.isNotEmpty) replayIdx = replayTicks[replayTickIdx].candleIdx + 1;
-    notifyListeners();
-  }
-
-  double get replayProgress => replayTicks.isEmpty ? 0 : replayTickIdx / (replayTicks.length - 1);
-
-  DateTime? get replayCurrentTime {
-    if (replayTicks.isEmpty || replayTickIdx >= replayTicks.length) return null;
-    return DateTime.fromMillisecondsSinceEpoch(replayTicks[replayTickIdx].time * 1000);
-  }
-
-  // --------------------------------------------?
-  // -- JOROpredict ? AMD Engine
-  //    EXACT COPY from HTML computeGainzSignals()
-  // --------------------------------------------?
-  void toggleJOROpredict() {
-    joropredictActive = !joropredictActive;
-    jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
-    if (joropredictActive) computeJPSignals();
-    notifyListeners();
-  }
-
-  void computeJPSignals() {
-    jpSignals = [];
-    jpPhases  = [];
-    // _gainzPrediction = null; // not used in Flutter
-
-    final c = getCandles();
-    if (c.length < 20) return;
-    final n = c.length;
-
-    // -- ATR(10) ? exact copy from HTML atr(i)
-    double atrAt(int i) {
-      const per = 10;
-      final from = max(1, i - per + 1);
-      double s = 0; int ct = 0;
-      for (int k = from; k <= i; k++) {
-        s += max(c[k].high - c[k].low,
-            max((c[k].high - c[k-1].close).abs(), (c[k].low - c[k-1].close).abs()));
-        ct++;
-      }
-      return ct > 0 ? s / ct : (c[i].high - c[i].low == 0 ? 1 : c[i].high - c[i].low);
-    }
-
-    // -- Detect ACCUMULATION zones ? exact copy from HTML detectAccumulation()
-    // -- detectAccumulation ? EXACT COPY from HTML computeGainzSignals > detectAccumulation(5)
-    List<AccZone> detectAccumulation({int minBars = 4, int maxBars = 30}) {
-      final results = <AccZone>[];
-      for (int i = 5; i < n - minBars; i++) {
-        final a = atrAt(i);
-        // Mesure range sur fen?tre glissante ? exact copy from HTML
-        for (int len = minBars; len <= min(maxBars, n - i - 2); len++) {
-          final window = c.sublist(i, i + len);
-          final hi = window.map((x) => x.high).reduce(max);
-          final lo = window.map((x) => x.low).reduce(min);
-          final rangeSize = hi - lo;
-          // Range ?troit = accumulation si < 1.5 ATR ? exact copy
-          if (rangeSize < a * 1.5) {
-            // V?rifier que la barre suivante n'est pas encore dans le range
-            if (i + len < n) {
-              results.add(AccZone(
-                startIdx: i, endIdx: i + len - 1,
-                high: hi, low: lo, mid: (hi + lo) / 2, atr: a,
-              ));
-            }
-            break; // prendre la fenetre la plus longue possible - exact copy
-          }
-          // rangeSize >= a*1.5 -> loop continues (exact copy: no break here)
-        }
-      }
-      // D?dupliquer: garder seulement zones non-chevauchantes
-      final deduped = <AccZone>[];
-      for (final z in results) {
-        final overlap = deduped.any((d) => z.startIdx <= d.endIdx && z.endIdx >= d.startIdx);
-        if (!overlap) deduped.add(z);
-      }
-      return deduped;
-    }
-
-    final accZones = detectAccumulation();
-
-    for (final acc in accZones) {
-      final endIdx = acc.endIdx;
-      if (endIdx + 1 >= n) continue;
-
-      // -- Phase 2: chercher MANIPULATION juste apr?s la zone ? exact copy from HTML
-      int    manipIdx = -1;
-      String manipDir = '';
-
-      final searchEnd = min(n - 1, endIdx + 8);
-      for (int j = endIdx + 1; j <= searchEnd; j++) {
-        final cv        = c[j];
-        final breakUp   = cv.high > acc.high + acc.atr * 0.15;
-        final breakDown = cv.low  < acc.low  - acc.atr * 0.15;
-        final returnUp  = cv.close < acc.high + acc.atr * 0.2;
-        final returnDown= cv.close > acc.low  - acc.atr * 0.2;
-
-        // Fakeout UP: perce le haut mais close revient -> manipulation bearish
-        if (breakUp && returnUp && cv.close < cv.open) {
-          manipIdx = j; manipDir = 'up'; break;
-        }
-        // Fakeout DOWN: perce le bas mais close revient -> manipulation bullish
-        if (breakDown && returnDown && cv.close > cv.open) {
-          manipIdx = j; manipDir = 'down'; break;
-        }
-      }
-
-      if (manipIdx == -1) continue;
-
-      // -- Fakeout UP  -> SELL / Fakeout DOWN -> BUY
-      final sigType  = manipDir == 'up' ? 'SELL' : 'BUY';
-      final sigPrice = manipDir == 'up'
-          ? c[manipIdx].high
-          : c[manipIdx].low;
-
-      final mc = c[manipIdx];
-      final isBullManip = mc.close > mc.open;
-
-      // ==================================================
-      // -- HYBRID SITUATION DETECTION
-      // ==================================================
-
-      // -- S1: Pure Wick ? body stays inside ACC, only wick pierces
-      // Body = entre open et close
-      final bodyTop    = max(mc.open, mc.close);
-      final bodyBot    = min(mc.open, mc.close);
-      final bodyInside = manipDir == 'up'
-          ? bodyTop <= acc.high + acc.atr * 0.1   // body reste dans/pres zone haute
-          : bodyBot >= acc.low  - acc.atr * 0.1;  // body reste dans/pres zone basse
-      final wickPierces = manipDir == 'up'
-          ? mc.high > acc.high + acc.atr * 0.15
-          : mc.low  < acc.low  - acc.atr * 0.15;
-
-      // -- S5: Inverse FVG (IFVG) ? gap between C-1 and C+1 invers?
-      // C[i-1].low > C[i+1].high (bullish IFVG) ou C[i-1].high < C[i+1].low (bearish IFVG)
-      bool hasIFVG = false;
-      double? ifvgLow, ifvgHigh;
-      if (manipIdx >= 1 && manipIdx + 1 < n) {
-        final prev = c[manipIdx - 1];
-        final next = c[manipIdx + 1];
-        if (sigType == 'BUY' && prev.low > next.high) {
-          // Bullish IFVG: gap down = trap, true direction UP
-          hasIFVG = true;
-          ifvgLow  = next.high;
-          ifvgHigh = prev.low;
-        } else if (sigType == 'SELL' && prev.high < next.low) {
-          // Bearish IFVG: gap up = trap, true direction DOWN
-          hasIFVG = true;
-          ifvgLow  = prev.high;
-          ifvgHigh = next.low;
-        }
-      }
-
-      // -- S4: Fair Value Gap (FVG) ? gap DANS la direction du breakout
-      // = distribution forte, entry seulement au retest du gap
-      bool hasFVG = false;
-      double? fvgLow, fvgHigh;
-      if (manipIdx >= 1 && manipIdx + 1 < n) {
-        final prev = c[manipIdx - 1];
-        final next = c[manipIdx + 1];
-        if (sigType == 'SELL' && prev.high < next.low) {
-          // FVG bearish: gap up = momentum SELL fort -> wait retest
-          hasFVG = true;
-          fvgLow  = prev.high;
-          fvgHigh = next.low;
-        } else if (sigType == 'BUY' && prev.low > next.high) {
-          // FVG bullish: gap down = momentum BUY fort -> wait retest
-          hasFVG = true;
-          fvgLow  = next.high;
-          fvgHigh = prev.low;
-        }
-      }
-
-      // -- S3 / S2: Body outside check + N+1 confirmation
-      bool bodyOutside = false;
-      bool nextReverts = false;
-      if (manipDir == 'up') {
-        bodyOutside = bodyTop > acc.high + acc.atr * 0.1;
-        if (manipIdx + 1 < n) {
-          final next = c[manipIdx + 1];
-          nextReverts = next.close < acc.high + acc.atr * 0.2;
-        }
-      } else {
-        bodyOutside = bodyBot < acc.low - acc.atr * 0.1;
-        if (manipIdx + 1 < n) {
-          final next = c[manipIdx + 1];
-          nextReverts = next.close > acc.low - acc.atr * 0.2;
-        }
-      }
-
-      // -- Determine situation + confidence + entry
-      JPSituation situation;
-      int confidence;
-      String entryTiming;
-      bool confirmed;
-      String filterNote = '';
-
-      if (hasIFVG) {
-        // S5 ? strongest manipulation trap
-        situation   = JPSituation.ifvg;
-        confidence  = 80;
-        entryTiming = 'aggressive';
-        confirmed   = true;
-      } else if (bodyInside && wickPierces) {
-        // S1 ? classic pure wick stop hunt
-        situation   = JPSituation.pureWick;
-        confidence  = 85;
-        entryTiming = 'aggressive';
-        confirmed   = true;
-      } else if (bodyOutside && nextReverts) {
-        // S2 ? body outside but N+1 pulls back inside
-        situation   = JPSituation.bodyRevert;
-        confidence  = 70;
-        entryTiming = 'conservative';
-        confirmed   = true;
-      } else if (hasFVG) {
-        // S4 ? FVG: wait for retest before entry
-        situation   = JPSituation.fvgRetest;
-        confidence  = 65;
-        entryTiming = 'wait_retest';
-        confirmed   = true; // valid but needs patience
-      } else if (bodyOutside && !nextReverts) {
-        // S3 ? breakout continuation: SKIP
-        situation   = JPSituation.breakout;
-        confidence  = 20;
-        entryTiming = 'skip';
-        confirmed   = false;
-        filterNote  = 'Breakout continuation - distribution, not manipulation';
-      } else {
-        // Fallback ? treat as S1 with lower confidence
-        situation   = JPSituation.pureWick;
-        confidence  = 60;
-        entryTiming = 'aggressive';
-        confirmed   = true;
-      }
-
-      final phase = JPPhase(
-        acc: acc, manipIdx: manipIdx, manipDir: manipDir,
-        distDir: manipDir == 'up' ? 'down' : 'up',
-      );
-      jpSignals.add(JPSignal(
-        idx: manipIdx, type: sigType, price: sigPrice,
-        phase: phase,
-        confirmed: confirmed,
-        filterNote: filterNote,
-        situation: situation,
-        confidence: confidence,
-        entryTiming: entryTiming,
-        fvgLow:  hasFVG || hasIFVG ? (fvgLow  ?? ifvgLow)  : null,
-        fvgHigh: hasFVG || hasIFVG ? (fvgHigh ?? ifvgHigh) : null,
-      ));
-      jpPhases.add(phase);
-    }
-  }
-
-  void setActiveJPSig(JPSignal? sig) {
-    activeJPSig = (activeJPSig != null && sig != null && activeJPSig!.idx == sig.idx) ? null : sig;
-    notifyListeners();
-  }
-
-  // -- EMA ? exact copy from HTML calcEMA()
-  static List<double?> calcEMA(List<double> data, int period) {
-    final k   = 2 / (period + 1);
-    final ema = <double?>[];
-    double? prev;
-    for (int i = 0; i < data.length; i++) {
-      if (prev == null) {
-        if (i < period - 1) { ema.add(null); continue; }
-        final sma = data.sublist(0, period).reduce((a, b) => a + b) / period;
-        ema.add(sma); prev = sma; continue;
-      }
-      final val = data[i] * k + prev * (1 - k);
-      ema.add(val); prev = val;
-    }
-    return ema;
-  }
-
-  // -- RSI ? exact copy from HTML calcRSI()
-  static List<double?> calcRSI(List<double> closes, int period) {
-    final rsi = List<double?>.filled(period, null);
-    double gains = 0, losses = 0;
-    for (int i = 1; i <= period; i++) {
-      final d = closes[i] - closes[i - 1];
-      if (d >= 0) gains += d; else losses += -d;
-    }
-    double avgG = gains / period, avgL = losses / period;
-    rsi.add(avgL == 0 ? 100 : 100 - 100 / (1 + avgG / avgL));
-    for (int i = period + 1; i < closes.length; i++) {
-      final d = closes[i] - closes[i - 1];
-      final g = d > 0 ? d : 0.0;
-      final l = d < 0 ? -d : 0.0;
-      avgG = (avgG * (period - 1) + g) / period;
-      avgL = (avgL * (period - 1) + l) / period;
-      rsi.add(avgL == 0 ? 100 : 100 - 100 / (1 + avgG / avgL));
-    }
-    return rsi;
-  }
-
-  // --------------------------------------------?
-  // -- Trailing stop ? exact copy from HTML runTrailingStop()
-  // --------------------------------------------?
-  void _runTrailingStop(double price) {
-    if (!trailingStop) return;
-    bool changed = false;
-    final dist = trailingDist / 100;
-    for (final t in trades.where((t) => t.status == 'open' && t.sl != null)) {
-      if (t.direction == 'long') {
-        final ns = price * (1 - dist);
-        if (ns > t.sl!) { t.sl = double.parse(ns.toStringAsFixed(6)); t.slTrailed = true; changed = true; }
-      } else {
-        final ns = price * (1 + dist);
-        if (ns < t.sl!) { t.sl = double.parse(ns.toStringAsFixed(6)); t.slTrailed = true; changed = true; }
-      }
-    }
-    if (changed) saveTrades();
-  }
-
-  void _checkPendingSignals(double price) {
-    bool changed = false;
-    for (final t in trades.where((t) => t.status == 'pending')) {
-      bool inZone;
-      if (t.entryZoneLow != null && t.entryZoneHigh != null) {
-        inZone = price >= t.entryZoneLow! && price <= t.entryZoneHigh!;
-      } else {
-        inZone = (price - t.entry).abs() / t.entry < 0.001;
-      }
-      if (inZone) { t.status = 'open'; changed = true; }
-    }
-    if (changed) { saveTrades(); notifyListeners(); }
-  }
-
-  // --------------------------------------------?
-  // -- Trade management
-  // --------------------------------------------?
-  void addTrade(Trade t)    { trades.insert(0, t); saveTrades(); notifyListeners(); }
-  void removeTrade(int id)  { trades.removeWhere((t) => t.id == id); saveTrades(); notifyListeners(); }
-  void clearAllTrades()     { trades.clear(); saveTrades(); notifyListeners(); }
-
-  // --------------------------------------------?
-  // -- Persistence
-  // --------------------------------------------?
-  Future<void> _loadPrefs() async {
-    final p = await SharedPreferences.getInstance();
-    groqKey       = p.getString('groqKey')   ?? '';
-    groqModel     = p.getString('groqModel') ?? 'llama-3.3-70b-versatile';
-    trailingStop  = p.getBool('trailingStop')  ?? false;
-    trailingDist  = p.getDouble('trailingDist') ?? 0.5;
-    jpAutoTPSL    = p.getBool('jpAutoTPSL')   ?? false;
-    jpTPAtr       = p.getDouble('jpTPAtr')    ?? 2.0;
-    jpSLAtr       = p.getDouble('jpSLAtr')    ?? 1.0;
-    jpAlarm       = p.getBool('jpAlarm')      ?? false;
-    final tradesJson = p.getString('kintana_trades') ?? '[]';
-    trades = (jsonDecode(tradesJson) as List).map((j) => Trade.fromJson(j as Map<String, dynamic>)).toList();
-    await _loadSDStats();
-    connect();
-    notifyListeners();
-  }
-
-  Future<void> saveTrades() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setString('kintana_trades', jsonEncode(trades.map((t) => t.toJson()).toList()));
-  }
-
-  Future<void> saveSettings() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setString('groqKey',    groqKey);
-    await p.setString('groqModel',  groqModel);
-    await p.setBool('trailingStop', trailingStop);
-    await p.setDouble('trailingDist', trailingDist);
-    await p.setBool('jpAutoTPSL',   jpAutoTPSL);
-    await p.setDouble('jpTPAtr',    jpTPAtr);
-    await p.setDouble('jpSLAtr',    jpSLAtr);
-    await p.setBool('jpAlarm',      jpAlarm);
-  }
-
-  // ==============================================
-  // -- SUPPLY & DEMAND ENGINE
-  // ==============================================
-
-  void toggleSD() {
-    sdActive = !sdActive;
-    if (sdActive) {
-      detectSDZones();
-    } else {
-      sdZones.clear();
-    }
-    notifyListeners();
-  }
-
-  // -- Step 1: Detect Supply & Demand zones from candles
-  // Supply zone = strong bearish origin candle (large body down, large move after)
-  // Demand zone = strong bullish origin candle (large body up, large move after)
-  void detectSDZones() {
-    sdZones.clear();
-    final c = getCandles();
-    if (c.length < 10) return;
-    final n = c.length;
-
-    // ATR for sizing
-    double atrVal = 0;
-    if (n >= 10) {
-      for (int i = n - 10; i < n; i++) {
-        atrVal += max(c[i].high - c[i].low,
-          max((c[i].high - (i > 0 ? c[i-1].close : c[i].open)).abs(),
-              (c[i].low  - (i > 0 ? c[i-1].close : c[i].open)).abs()));
-      }
-      atrVal /= 10;
-    }
-    if (atrVal == 0) atrVal = (c.last.high - c.last.low);
-
-    for (int i = 2; i < n - 2; i++) {
-      final cv   = c[i];
-      final body = (cv.close - cv.open).abs();
-      final range = cv.high - cv.low;
-
-      // Strong candle = body > 60% of range AND body > 0.8? ATR
-      final isStrong = body > range * 0.6 && body > atrVal * 0.8;
-      if (!isStrong) continue;
-
-      // Check momentum after: next 2 candles continue in same direction
-      final next1 = c[i + 1];
-      final next2 = c[i + 2];
-
-      // -- SUPPLY zone (bearish origin)
-      if (cv.close < cv.open) {
-        final momentum = (c[i].close - next2.low).abs();
-        if (momentum < atrVal * 0.5) continue; // not enough move
-
-        // Zone = from close to open of origin candle (body)
-        final zHigh = max(cv.open, cv.close);
-        final zLow  = min(cv.open, cv.close);
-
-        // Check zone not already tested (price came back and closed inside)
-        bool tested = false;
-        for (int j = i + 1; j < n; j++) {
-          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
-        }
-        if (tested) continue;
-
-        sdZones.add(SDZone(
-          id: _sdIdCounter++,
-          type: SDZoneType.supply,
-          zoneHigh: zHigh,
-          zoneLow:  zLow,
-          originIdx: i,
-          originClose: cv.close,
-        ));
-      }
-
-      // -- DEMAND zone (bullish origin)
-      if (cv.close > cv.open) {
-        final momentum = (next2.high - c[i].close).abs();
-        if (momentum < atrVal * 0.5) continue;
-
-        final zHigh = max(cv.open, cv.close);
-        final zLow  = min(cv.open, cv.close);
-
-        bool tested = false;
-        for (int j = i + 1; j < n; j++) {
-          if (c[j].close >= zLow && c[j].close <= zHigh) { tested = true; break; }
-        }
-        if (tested) continue;
-
-        sdZones.add(SDZone(
-          id: _sdIdCounter++,
-          type: SDZoneType.demand,
-          zoneHigh: zHigh,
-          zoneLow:  zLow,
-          originIdx: i,
-          originClose: cv.close,
-        ));
-      }
-    }
-    notifyListeners();
-  }
-
-  // -- Step 2 & 3: Check price entering zone + LTF confirmation
-  void _checkSDZones(double currentPrice) {
-    if (!sdActive || sdZones.isEmpty) return;
-    final c   = getCandles();
-    if (c.isEmpty) return;
-    final atr = calcATR();
-    bool changed = false;
-
-    for (final zone in sdZones) {
-      if (zone.status == SDZoneStatus.hitTP ||
-          zone.status == SDZoneStatus.hitSL ||
-          zone.status == SDZoneStatus.expired) continue;
-
-      // -- Step 2: Price enters zone
-      if (zone.status == SDZoneStatus.waiting && zone.priceInZone(currentPrice)) {
-        zone.status = SDZoneStatus.entered;
-        changed = true;
-      }
-
-      // -- LTF confirmation (simulated on HTF candles)
-      // Confirmation = rejection candle inside zone:
-      // Demand: bullish pin bar or engulfing while price in zone
-      // Supply: bearish pin bar or engulfing while price in zone
-      if (zone.status == SDZoneStatus.entered && !zone.ltfConfirmed) {
-        final last = c.last;
-        final inZone = last.low <= zone.zoneHigh && last.high >= zone.zoneLow;
-        if (inZone) {
-          final body  = (last.close - last.open).abs();
-          final range = last.high - last.low;
-          final isBull = last.close > last.open;
-          final isBear = last.close < last.open;
-
-          // Rejection = body < 40% of range (pin bar) or strong reversal body
-          final isPinBar    = body < range * 0.4;
-          final isEngulfing = body > range * 0.7;
-          final isReversal  = (zone.isBuy && (isPinBar || (isEngulfing && isBull))) ||
-                              (zone.isSell && (isPinBar || (isEngulfing && isBear)));
-
-          if (isReversal) {
-            zone.ltfConfirmed  = true;
-            zone.ltfConfirmIdx = c.length - 1;
-
-            // -- Step 3: Set entry / SL / TP
-            if (zone.isBuy) {
-              zone.entry = zone.zoneLow + zone.zoneSize * 0.5; // mid zone
-              zone.sl    = zone.zoneLow - atr * 0.3;           // below zone
-              zone.tp    = zone.entry   + atr * 2.5;           // 2.5R TP
-            } else {
-              zone.entry = zone.zoneHigh - zone.zoneSize * 0.5;
-              zone.sl    = zone.zoneHigh + atr * 0.3;
-              zone.tp    = zone.entry    - atr * 2.5;
-            }
-            zone.status = SDZoneStatus.confirmed;
-            changed = true;
-          }
-        }
-      }
-
-      // -- Check TP / SL hit
-      if (zone.status == SDZoneStatus.confirmed &&
-          zone.entry != null && zone.sl != null && zone.tp != null) {
-        bool hitTP = false, hitSL = false;
-        if (zone.isBuy) {
-          hitTP = currentPrice >= zone.tp!;
-          hitSL = currentPrice <= zone.sl!;
-        } else {
-          hitTP = currentPrice <= zone.tp!;
-          hitSL = currentPrice >= zone.sl!;
-        }
-
-        if (hitTP || hitSL) {
-          zone.won    = hitTP;
-          zone.status = hitTP ? SDZoneStatus.hitTP : SDZoneStatus.hitSL;
-          if (hitTP) sdWins++; else sdLosses++;
-          // Prepare win rate message for JORO
-          sdLastResultMsg =
-            '${hitTP ? "[OK] TP HIT" : "[X] SL HIT"} - ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}
-'
-            '[stats] Win Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
-          changed = true;
-          _saveSDStats();
-        }
-      }
-    }
-
-    // Remove expired zones (hit TP or SL ? keep for display briefly)
-    if (changed) notifyListeners();
-  }
-
-  Future<void> _saveSDStats() async {
-    final p = await SharedPreferences.getInstance();
-    await p.setInt('sdWins',   sdWins);
-    await p.setInt('sdLosses', sdLosses);
-  }
-
-  Future<void> _loadSDStats() async {
-    final p = await SharedPreferences.getInstance();
-    sdWins   = p.getInt('sdWins')   ?? 0;
-    sdLosses = p.getInt('sdLosses') ?? 0;
-  }
-
-  void clearSDResult(int zoneId) {
-    sdZones.removeWhere((z) =>
-      z.id == zoneId &&
-      (z.status == SDZoneStatus.hitTP || z.status == SDZoneStatus.hitSL));
-    notifyListeners();
+  double y2p(double y, double mn, double mx, double H) {
+    final r = mx - mn == 0 ? 1.0 : mx - mn;
+    return mx - ((y - padTop) / (H - padTop - padBottom)) * r;
   }
 
   @override
-  void dispose() { _ws?.sink.close(); replayTimer?.cancel(); super.dispose(); }
-}
+  void paint(Canvas canvas, Size size) {
+    final W = size.width;
+    final H = size.height;
 
-class _ReplayTick {
-  final int time;
-  final double price;
-  final int candleIdx;
-  const _ReplayTick({required this.time, required this.price, required this.candleIdx});
+    // ?? Background gradient
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, W, H),
+      Paint()..shader = const LinearGradient(
+        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+        colors: [Color(0xFF03050E), Color(0xFF050812)],
+      ).createShader(Rect.fromLTWH(0, 0, W, H)),
+    );
+
+    if (candles.isEmpty) { _drawEmptyText(canvas, size); return; }
+
+    // ?? Visible range
+    final s    = offset.round().clamp(0, candles.length - 1);
+    final e    = min(candles.length - 1, s + zoom.round() - 1);
+    final vis  = candles.sublist(s, e + 1);
+    final totalSlots = zoom.round();
+
+    // ?? Price range
+    double mn = vis.map((c) => c.low).reduce(min);
+    double mx = vis.map((c) => c.high).reduce(max);
+    final pad = (mx - mn) * 0.07;
+    mn -= pad; mx += pad;
+    if (yOffset != 0) {
+      final range = mx - mn;
+      mn += range * yOffset;
+      mx += range * yOffset;
+    }
+
+    final cW = (W - padLeft - padRight) / totalSlots;
+    final bW = max(1.0, min(cW * 0.7, 32.0));
+
+    _drawGrid(canvas, W, H, mn, mx);
+    _drawVolume(canvas, W, H, vis, cW);
+    _drawCandles(canvas, H, vis, cW, bW, mn, mx);
+    _drawTradeLines(canvas, W, H, mn, mx);
+    _drawSDZones(canvas, W, H, s, cW, mn, mx);
+
+    // ?? JOROpredict ? exact copy from HTML drawGainzSignals()
+    if (joropredictActive) {
+      _drawGainzSignals(canvas, W, H, s, e, vis, cW, mn, mx);
+    }
+
+    // ?? Live price line
+    if (!state.isReplay && state.price != null) {
+      _drawLivePriceLine(canvas, W, H, mn, mx, cW, s, vis.length);
+    }
+
+    // ?? Replay cursor
+    if (state.isReplay && state.replayTicks.isNotEmpty) {
+      _drawReplayCursor(canvas, W, H, s, cW, totalSlots);
+    }
+
+    _drawYAxis(canvas, W, H, mn, mx);
+    _drawXAxis(canvas, W, H, vis, cW);
+
+    if (mouseX != null && mouseY != null) {
+      _drawCrosshair(canvas, W, H, mn, mx);
+    }
+  }
+
+  // ?????????????????????????????????????????????????????????
+  // ?? drawGainzSignals ? EXACT COPY from HTML drawGainzSignals()
+  // ?????????????????????????????????????????????????????????
+  void _drawGainzSignals(Canvas canvas, double W, double H, int s, int e,
+      List<Candle> vis, double cW, double mn, double mx) {
+    hitAreas.clear();
+
+    final cL = padLeft;
+    final cR = W - padRight;
+
+    for (final ph in state.jpPhases) {
+      final acc      = ph.acc;
+      final manipIdx = ph.manipIdx;
+      final manipDir = ph.manipDir;
+      final distDir  = ph.distDir;
+      final isBull   = distDir == 'up'; // vraie direction après manipulation
+
+      // ?? Phase 1: ACCUMULATION zone (violet) ? exact copy
+      final xS  = cL + (acc.startIdx - s + 0.5) * cW;
+      final xE  = cL + (acc.endIdx   - s + 0.5) * cW;
+      final zy1 = p2y(acc.high, mn, mx, H);
+      final zy2 = p2y(acc.low,  mn, mx, H);
+
+      if (xE > cL && xS < cR && zy2 > padTop && zy1 < H - padBottom) {
+        final dx2 = max(cL, xS);
+        final dw  = min(cR, xE) - dx2;
+        if (dw > 0) {
+          // Fill
+          canvas.drawRect(
+            Rect.fromLTWH(dx2, zy1, dw, zy2 - zy1),
+            Paint()..color = const Color(0x1A9B72E6),
+          );
+          // Dashed border
+          _dashRect(canvas, Rect.fromLTWH(dx2, zy1, dw, zy2 - zy1),
+              const Color(0x739B72E6), 0.7, dash: 3, gap: 3);
+        }
+        // 'ACC' label
+        _drawSmallText(canvas, 'ACC',
+            Offset(max(cL + 2, xS + 2), zy1 - 8),
+            const Color(0xD99B72E6), bold: true, size: 6.5);
+      }
+
+      // ?? Phase 2 + Signal: MANIPULATION candle ? exact copy
+      final mLocal = manipIdx - s;
+      if (mLocal >= 0 && mLocal < vis.length) {
+        final mc   = vis[mLocal];
+        final mx2c = cL + (mLocal + 0.5) * cW;
+        final mHy  = p2y(mc.high, mn, mx, H);
+        final mLy  = p2y(mc.low,  mn, mx, H);
+        // ?? Hybrid situation colors
+        final sig0 = state.jpSignals.where((sg) => sg.idx == manipIdx).firstOrNull;
+        final isConfirmed = sig0?.confirmed ?? true;
+        final situation   = sig0?.situation;
+        final confidence  = sig0?.confidence ?? 85;
+
+        // Color per situation
+        Color col;
+        if (!isConfirmed) {
+          col = const Color(0xFF4A5568); // grey = skip/breakout
+        } else {
+          switch (situation) {
+            case JPSituation.pureWick:
+              col = isBull ? KintanaTheme.green : KintanaTheme.red; // full bright
+            case JPSituation.ifvg:
+              col = isBull ? const Color(0xFF00FFB3) : const Color(0xFFFF6B9D); // cyan/pink = IFVG
+            case JPSituation.bodyRevert:
+              col = isBull ? const Color(0xFF7BFF6A) : const Color(0xFFFFAA44); // lighter
+            case JPSituation.fvgRetest:
+              col = const Color(0xFFFFD740); // yellow = wait retest
+            case JPSituation.breakout:
+              col = const Color(0xFF4A5568); // grey
+            case null:
+              col = isBull ? KintanaTheme.green : KintanaTheme.red;
+          }
+        }
+
+        // Highlight du wick de manipulation (ligne ?paisse color?e + glow)
+        final wickPaint = Paint()
+          ..color = col
+          ..strokeWidth = 3
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+        if (manipDir == 'up') {
+          final bodyTop = p2y(max(mc.open, mc.close), mn, mx, H);
+          canvas.drawLine(Offset(mx2c, bodyTop), Offset(mx2c, mHy), wickPaint);
+        } else {
+          final bodyBot = p2y(min(mc.open, mc.close), mn, mx, H);
+          canvas.drawLine(Offset(mx2c, bodyBot), Offset(mx2c, mLy), wickPaint);
+        }
+
+        // Cercle entry point sur le wick extr?me
+        final entryY = manipDir == 'up' ? mHy : mLy;
+        canvas.drawCircle(
+          Offset(mx2c, entryY), 5,
+          Paint()..color = col..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
+        );
+        canvas.drawCircle(Offset(mx2c, entryY), 5, Paint()..color = col);
+
+        // Arrow signal ? exact copy
+        final arrowY = isBull ? mLy + 22 : mHy - 22;
+        final arrowPath = Path();
+        if (isBull) {
+          arrowPath.moveTo(mx2c,      arrowY - 13);
+          arrowPath.lineTo(mx2c - 9,  arrowY + 2);
+          arrowPath.lineTo(mx2c + 9,  arrowY + 2);
+        } else {
+          arrowPath.moveTo(mx2c,      arrowY + 13);
+          arrowPath.lineTo(mx2c - 9,  arrowY - 2);
+          arrowPath.lineTo(mx2c + 9,  arrowY - 2);
+        }
+        arrowPath.close();
+        canvas.drawPath(arrowPath,
+            Paint()..color = col.withOpacity(0.5)..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8));
+        canvas.drawPath(arrowPath, Paint()..color = col);
+
+        // Badge label ? exact copy
+        final lbl  = isBull ? '▲ BUY' : '▼ SELL';
+        final ly   = isBull ? arrowY + 4 : arrowY - 17;
+        final tp   = _measureText(lbl, 8, bold: true);
+        final tw   = tp + 12;
+        // Pill background
+        final rect = RRect.fromRectAndRadius(
+            Rect.fromLTWH(mx2c - tw / 2, ly, tw, 13), const Radius.circular(4));
+        canvas.drawRRect(rect, Paint()..color = col.withOpacity(0.2));
+        canvas.drawRRect(rect, Paint()..color = col..style = PaintingStyle.stroke..strokeWidth = 1);
+        _drawSmallText(canvas, lbl, Offset(mx2c - tw / 2 + 6, ly + 2), col, bold: true, size: 8, center: true, width: tw);
+
+        // Sub-label 'MAN' ? exact copy
+        _drawSmallText(canvas, 'MAN',
+            Offset(mx2c - 10, isBull ? ly + 15 : ly - 9),
+            col.withOpacity(0.7), size: 6);
+
+        // Active signal highlight ring
+        final sig = state.jpSignals.where((sg) => sg.idx == manipIdx).firstOrNull;
+        if (sig != null) {
+          if (state.activeJPSig != null && state.activeJPSig!.idx == sig.idx) {
+            canvas.drawCircle(
+              Offset(mx2c, arrowY), 18,
+              Paint()..color = col.withOpacity(0.4)..style = PaintingStyle.stroke..strokeWidth = 1.5,
+            );
+          }
+          hitAreas.add(JPHitArea(cx: mx2c, cy: arrowY, radius: 24, sigIdx: sig.idx));
+        }
+      }
+    }
+
+    // ?? TP/SL lines pour le signal actif ? exact copy from HTML
+    if (state.jpAutoTPSL && state.activeJPSig != null) {
+      final atr   = state.calcATR();
+      final sig   = state.activeJPSig!;
+      final isBuy = sig.type == 'BUY';
+      final entry = sig.price;
+      final tp2   = isBuy ? entry + atr * state.jpTPAtr : entry - atr * state.jpTPAtr;
+      final sl2   = isBuy ? entry - atr * state.jpSLAtr : entry + atr * state.jpSLAtr;
+
+      final localIdx = sig.idx - s;
+      final startX = (localIdx >= 0 && localIdx < vis.length)
+          ? cL + (localIdx + 0.5) * cW
+          : cL;
+
+      // Entry line
+      _dashLine(canvas,
+        Paint()..color = Colors.white.withOpacity(0.35)..strokeWidth = 0.8,
+        Offset(startX, p2y(entry, mn, mx, H)),
+        Offset(cR,     p2y(entry, mn, mx, H)),
+        dash: 3, gap: 4,
+      );
+
+      // TP line
+      final tpY = p2y(tp2, mn, mx, H);
+      if (tpY > padTop && tpY < H - padBottom) {
+        _dashLine(canvas,
+          Paint()..color = KintanaTheme.yellow..strokeWidth = 1.2
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+          Offset(startX, tpY), Offset(cR, tpY), dash: 6, gap: 4,
+        );
+        canvas.drawRect(Rect.fromLTWH(cR - 42, tpY - 9, 42, 14),
+            Paint()..color = const Color(0xF00D1020));
+        _drawSmallText(canvas, 'TP ${fp(tp2)}', Offset(cR - 38, tpY - 4),
+            KintanaTheme.yellow, bold: true, size: 7);
+      }
+
+      // SL line
+      final slY = p2y(sl2, mn, mx, H);
+      if (slY > padTop && slY < H - padBottom) {
+        _dashLine(canvas,
+          Paint()..color = KintanaTheme.red..strokeWidth = 1.2
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+          Offset(startX, slY), Offset(cR, slY), dash: 6, gap: 4,
+        );
+        canvas.drawRect(Rect.fromLTWH(cR - 42, slY - 9, 42, 14),
+            Paint()..color = const Color(0xF00D1020));
+        _drawSmallText(canvas, 'SL ${fp(sl2)}', Offset(cR - 38, slY - 4),
+            KintanaTheme.red, bold: true, size: 7);
+      }
+    }
+  }
+
+  // ?????????????????????????????????????????????????????????
+  // ?? Supply & Demand Zones Drawing
+  // ?????????????????????????????????????????????????????????
+
+  void _drawSDZones(Canvas canvas, double W, double H, int s, double cW, double mn, double mx) {
+    if (!state.sdActive) return;
+    final cL = padLeft;
+    final cR = W - padRight;
+
+    for (final zone in state.sdZones) {
+      if (zone.status == SDZoneStatus.expired) continue;
+
+      final zy1 = p2y(zone.zoneHigh, mn, mx, H);
+      final zy2 = p2y(zone.zoneLow,  mn, mx, H);
+      if (zy2 < padTop || zy1 > H - padBottom) continue;
+
+      final isBuy = zone.isBuy;
+
+      // ?? STEP 1 & 2: Yellow entry zone rectangle (waiting or entered)
+      if (zone.status == SDZoneStatus.waiting ||
+          zone.status == SDZoneStatus.entered) {
+        final fillCol   = zone.status == SDZoneStatus.entered
+            ? const Color(0x33FFD740)  // brighter when price inside
+            : const Color(0x1AFFD740);
+        final strokeCol = zone.status == SDZoneStatus.entered
+            ? const Color(0xCCFFD740)
+            : const Color(0x80FFD740);
+
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = fillCol,
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          strokeCol, 1.0, dash: 5, gap: 3);
+
+        // Label
+        final lbl = isBuy ? 'DEMAND ZONE' : 'SUPPLY ZONE';
+        final sub = zone.status == SDZoneStatus.entered ? '⚡ PRICE IN ZONE' : '';
+        _drawSmallText(canvas, lbl,
+            Offset(cL + 6, zy1 + 4),
+            const Color(0xE5FFD740), bold: true, size: 7);
+        if (sub.isNotEmpty) {
+          _drawSmallText(canvas, sub,
+              Offset(cL + 6, zy1 + 14),
+              const Color(0xFFFFD740), bold: true, size: 6.5);
+        }
+
+        // Waiting for LTF label
+        if (zone.status == SDZoneStatus.entered && !zone.ltfConfirmed) {
+          _drawSmallText(canvas, '⏳ Awaiting LTF confirmation...',
+              Offset(cL + 6, zy2 - 12),
+              const Color(0xB3FFD740), size: 6);
+        }
+      }
+
+      // ?? STEP 3: Confirmed ? draw SL rect (red) + TP rect (green)
+      if (zone.status == SDZoneStatus.confirmed &&
+          zone.entry != null && zone.sl != null && zone.tp != null) {
+
+        final entryY = p2y(zone.entry!, mn, mx, H);
+        final slY    = p2y(zone.sl!,    mn, mx, H);
+        final tpY    = p2y(zone.tp!,    mn, mx, H);
+
+        // SL rectangle (red)
+        final slTop = min(entryY, slY);
+        final slH   = (entryY - slY).abs();
+        canvas.drawRect(
+          Rect.fromLTWH(cL, slTop, cR - cL, slH),
+          Paint()..color = const Color(0x22FF3D57),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, slTop, cR - cL, slH),
+          const Color(0x99FF3D57), 1.0);
+        _drawSmallText(canvas, '🛑 SL ${fp(zone.sl)}',
+            Offset(cL + 6, slTop + 4),
+            const Color(0xE5FF3D57), bold: true, size: 7);
+
+        // TP rectangle (green)
+        final tpTop = min(entryY, tpY);
+        final tpH   = (entryY - tpY).abs();
+        canvas.drawRect(
+          Rect.fromLTWH(cL, tpTop, cR - cL, tpH),
+          Paint()..color = const Color(0x2200E676),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, tpTop, cR - cL, tpH),
+          const Color(0x9900E676), 1.0);
+        _drawSmallText(canvas, '🎯 TP ${fp(zone.tp)}',
+            Offset(cL + 6, tpTop + 4),
+            const Color(0xE500E676), bold: true, size: 7);
+
+        // Entry line
+        _dashLine(canvas,
+          Paint()..color = const Color(0xCCFFD740)..strokeWidth = 1.5,
+          Offset(cL, entryY), Offset(cR, entryY), dash: 6, gap: 3);
+        _drawSmallText(canvas, '⚡ ENTRY ${fp(zone.entry)}',
+            Offset(cL + 6, entryY - 10),
+            const Color(0xE5FFD740), bold: true, size: 7);
+
+        // Also draw yellow zone outline still
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = const Color(0x0DFFD740),
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          const Color(0x40FFD740), 0.7, dash: 3, gap: 4);
+      }
+
+      // ?? Hit TP / SL ? fade out display
+      if (zone.status == SDZoneStatus.hitTP || zone.status == SDZoneStatus.hitSL) {
+        final hitCol = zone.status == SDZoneStatus.hitTP
+            ? const Color(0x2200E676)
+            : const Color(0x22FF3D57);
+        final hitStroke = zone.status == SDZoneStatus.hitTP
+            ? const Color(0x6600E676)
+            : const Color(0x66FF3D57);
+        canvas.drawRect(
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          Paint()..color = hitCol,
+        );
+        _dashRect(canvas,
+          Rect.fromLTWH(cL, zy1, cR - cL, zy2 - zy1),
+          hitStroke, 0.8);
+        final resultLbl = zone.status == SDZoneStatus.hitTP ? '✅ TP HIT' : '❌ SL HIT';
+        _drawSmallText(canvas, resultLbl,
+            Offset(cL + 6, zy1 + 4),
+            zone.status == SDZoneStatus.hitTP
+                ? const Color(0xE500E676)
+                : const Color(0xE5FF3D57),
+            bold: true, size: 8);
+      }
+    }
+  }
+
+  // ?????????????????????????????????????????????????????????
+  // ?? Rest of chart drawing
+  // ?????????????????????????????????????????????????????????
+
+  void _drawEmptyText(Canvas canvas, Size size) {
+    _drawSmallText(
+      canvas,
+      state.isReplay ? 'Select a date and tap LOAD' : 'Connecting to market data...',
+      Offset(size.width / 2 - 80, size.height / 2),
+      const Color(0x803D4A6B), size: 11,
+    );
+  }
+
+  void _drawGrid(Canvas canvas, double W, double H, double mn, double mx) {
+    for (int i = 0; i <= 8; i++) {
+      final price = mn + (mx - mn) * (i / 8);
+      final y     = p2y(price, mn, mx, H);
+      _dashLine(canvas,
+        Paint()
+          ..color = i % 2 == 0 ? const Color(0xE5161D32) : const Color(0xB2121A2A)
+          ..strokeWidth = 0.5,
+        Offset(padLeft, y), Offset(W - padRight, y),
+        dash: 2, gap: 5,
+      );
+    }
+  }
+
+  void _drawVolume(Canvas canvas, double W, double H, List<Candle> vis, double cW) {
+    if (vis.isEmpty) return;
+    final maxRange = vis.map((c) => c.range).reduce(max);
+    if (maxRange == 0) return;
+    final maxVH = H * 0.12;
+    for (int i = 0; i < vis.length; i++) {
+      final c  = vis[i];
+      final vh = (c.range / maxRange) * maxVH;
+      final x  = padLeft + (i + 0.5) * cW;
+      canvas.drawRect(
+        Rect.fromLTWH(x - cW * 0.35, H - padBottom - vh, cW * 0.7, vh),
+        Paint()..color = (c.isBull ? KintanaTheme.green : KintanaTheme.red).withOpacity(0.12),
+      );
+    }
+  }
+
+  void _drawCandles(Canvas canvas, double H, List<Candle> vis, double cW, double bW, double mn, double mx) {
+    for (int i = 0; i < vis.length; i++) {
+      final c      = vis[i];
+      final x      = padLeft + (i + 0.5) * cW;
+      final openY  = p2y(c.open,  mn, mx, H);
+      final closeY = p2y(c.close, mn, mx, H);
+      final highY  = p2y(c.high,  mn, mx, H);
+      final lowY   = p2y(c.low,   mn, mx, H);
+      final bodyTop = min(openY, closeY);
+      final bodyH   = max((closeY - openY).abs(), 1.0);
+      final isBull  = c.isBull;
+      final col     = isBull ? KintanaTheme.green : KintanaTheme.red;
+
+      // Wick
+      canvas.drawLine(Offset(x, highY), Offset(x, bodyTop),
+          Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2);
+      canvas.drawLine(Offset(x, bodyTop + bodyH), Offset(x, lowY),
+          Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2);
+
+      // Body gradient
+      final rect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH), const Radius.circular(1.5));
+      canvas.drawRRect(rect, Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter, end: Alignment.bottomCenter,
+          colors: isBull
+              ? [KintanaTheme.green, KintanaTheme.green.withOpacity(0.7)]
+              : [KintanaTheme.red.withOpacity(0.85), KintanaTheme.red],
+        ).createShader(Rect.fromLTWH(x - bW / 2, bodyTop, bW, bodyH)));
+
+      // Doji
+      if (bodyH <= 1.5) {
+        canvas.drawLine(Offset(x - bW / 2, openY), Offset(x + bW / 2, openY),
+            Paint()..color = KintanaTheme.yellow.withOpacity(0.7)..strokeWidth = 1.5);
+      }
+    }
+  }
+
+  void _drawTradeLines(Canvas canvas, double W, double H, double mn, double mx) {
+    for (final t in state.trades) {
+      if (t.status != 'open' && t.status != 'pending') continue;
+      final isBull = t.direction == 'long';
+      final lc = isBull ? KintanaTheme.green : KintanaTheme.red;
+
+      void drawLine(double price, Color color, bool dashed, String label) {
+        final y = p2y(price, mn, mx, H);
+        if (y < padTop || y > H - padBottom) return;
+        final paint = Paint()..color = color..strokeWidth = 1.5;
+        if (dashed) {
+          _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y), dash: 6, gap: 3);
+        } else {
+          canvas.drawLine(Offset(padLeft, y), Offset(W - padRight, y), paint);
+        }
+        _drawPill(canvas, label, Offset(padLeft + 6, y - 7), color);
+      }
+
+      drawLine(t.entry, lc.withOpacity(0.8), t.status == 'pending',
+          '${isBull ? '▲' : '▼'} ${t.status == 'pending' ? 'PENDING' : isBull ? 'BUY' : 'SELL'} @ ${fp(t.entry)}');
+      if (t.sl  != null) drawLine(t.sl!,  KintanaTheme.red.withOpacity(0.7),   true, '🛑 SL ${fp(t.sl)}');
+      if (t.tp1 != null) drawLine(t.tp1!, KintanaTheme.green.withOpacity(0.7), true, '🎯 TP ${fp(t.tp1)}');
+    }
+  }
+
+  void _drawLivePriceLine(Canvas canvas, double W, double H, double mn, double mx, double cW, int s, int visLen) {
+    final price = state.price!;
+    final y = p2y(price, mn, mx, H);
+    if (y < padTop || y > H - padBottom) return;
+    final up  = state.prevPrice == null || price >= state.prevPrice!;
+    final col = up ? KintanaTheme.green : KintanaTheme.red;
+
+    // Glow
+    canvas.drawLine(Offset(padLeft, y), Offset(W - padRight, y),
+        Paint()..color = col.withOpacity(0.4)..strokeWidth = 2
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6));
+
+    // Dashed line
+    _dashLine(canvas, Paint()..color = col.withOpacity(0.7)..strokeWidth = 1.2,
+        Offset(padLeft, y), Offset(W - padRight, y), dash: 5, gap: 3);
+
+    // Price badge
+    final badgeW = padRight - 2;
+    final bx = W - padRight + 1;
+    final rr = RRect.fromRectAndRadius(Rect.fromLTWH(bx, y - 8, badgeW, 16), const Radius.circular(3));
+    canvas.drawRRect(rr, Paint()..color = col);
+    _drawSmallText(canvas, fp(price), Offset(bx + 2, y - 5), const Color(0xFF050810), bold: true, size: 8);
+
+    // Pulse dot
+    final lastLocal = state.candles.length - 1 - s;
+    if (lastLocal >= 0 && lastLocal < visLen) {
+      final lx = padLeft + (lastLocal + 0.5) * cW;
+      canvas.drawCircle(Offset(lx, y), 6, Paint()..color = col.withOpacity(0.22));
+      canvas.drawCircle(Offset(lx, y), 2.5, Paint()..color = col);
+    }
+  }
+
+  void _drawReplayCursor(Canvas canvas, double W, double H, int s, double cW, int totalSlots) {
+    final rIdx = state.replayIdx - 1;
+    if (rIdx < s) return;
+    final local = rIdx - s;
+    if (local >= totalSlots) return;
+    final x = padLeft + (local + 0.5) * cW;
+    canvas.drawLine(Offset(x, padTop), Offset(x, H - padBottom),
+        Paint()..color = KintanaTheme.purple.withOpacity(0.6)..strokeWidth = 1);
+  }
+
+  void _drawYAxis(Canvas canvas, double W, double H, double mn, double mx) {
+    for (int i = 0; i <= 8; i++) {
+      final price = mn + (mx - mn) * (i / 8);
+      final y     = p2y(price, mn, mx, H);
+      if (y < padTop || y > H - padBottom) continue;
+      _drawSmallText(canvas, fp(price), Offset(W - padRight + 3, y - 4), KintanaTheme.t3.withOpacity(0.9));
+    }
+  }
+
+  void _drawXAxis(Canvas canvas, double W, double H, List<Candle> vis, double cW) {
+    if (vis.isEmpty) return;
+    final step = max(1, (vis.length / 6).ceil());
+    for (int i = 0; i < vis.length; i += step) {
+      final c  = vis[i];
+      final x  = padLeft + (i + 0.5) * cW;
+      final dt = DateTime.fromMillisecondsSinceEpoch(c.time * 1000);
+      final lbl = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      _drawSmallText(canvas, lbl, Offset(x - 12, H - padBottom + 4), KintanaTheme.t3);
+    }
+  }
+
+  void _drawCrosshair(Canvas canvas, double W, double H, double mn, double mx) {
+    final x = mouseX!; final y = mouseY!;
+    final paint = Paint()..color = KintanaTheme.t2.withOpacity(0.25)..strokeWidth = 0.5;
+    _dashLine(canvas, paint, Offset(x, padTop), Offset(x, H - padBottom), dash: 3, gap: 4);
+    _dashLine(canvas, paint, Offset(padLeft, y), Offset(W - padRight, y), dash: 3, gap: 4);
+    final hp = y2p(y, mn, mx, H);
+    canvas.drawRect(Rect.fromLTWH(W - padRight, y - 7.5, padRight - 1, 15), Paint()..color = const Color(0xF0101424));
+    canvas.drawRect(Rect.fromLTWH(W - padRight, y - 7.5, padRight - 1, 15),
+        Paint()..color = KintanaTheme.b2.withOpacity(0.9)..style = PaintingStyle.stroke..strokeWidth = 0.8);
+    _drawSmallText(canvas, fp(hp), Offset(W - padRight + 3, y - 4.5), KintanaTheme.t1.withOpacity(0.8));
+  }
+
+  // ?????????????????????????????????????????????????????????
+  // ?? Drawing helpers
+  // ?????????????????????????????????????????????????????????
+
+  void _dashLine(Canvas canvas, Paint paint, Offset a, Offset b,
+      {double dash = 2, double gap = 5}) {
+    final dir = b - a;
+    final len = dir.distance;
+    if (len == 0) return;
+    final unit = dir / len;
+    double d = 0;
+    while (d < len) {
+      canvas.drawLine(a + unit * d, a + unit * min(d + dash, len), paint);
+      d += dash + gap;
+    }
+  }
+
+  void _dashRect(Canvas canvas, Rect rect, Color color, double strokeWidth,
+      {double dash = 3, double gap = 3}) {
+    final p = Paint()..color = color..strokeWidth = strokeWidth;
+    final corners = [
+      [rect.topLeft, rect.topRight],
+      [rect.topRight, rect.bottomRight],
+      [rect.bottomRight, rect.bottomLeft],
+      [rect.bottomLeft, rect.topLeft],
+    ];
+    for (final seg in corners) _dashLine(canvas, p, seg[0], seg[1], dash: dash, gap: gap);
+  }
+
+  void _drawPill(Canvas canvas, String text, Offset pos, Color color) {
+    final tp = _buildTP(text, 7.5, color, bold: true);
+    const pad = 5.0;
+    final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(pos.dx - pad, pos.dy - 1, tp.width + pad * 2, tp.height + 2), const Radius.circular(3));
+    canvas.drawRRect(rect, Paint()..color = color.withOpacity(0.18));
+    canvas.drawRRect(rect, Paint()..color = color.withOpacity(0.55)..style = PaintingStyle.stroke..strokeWidth = 0.8);
+    tp.paint(canvas, pos);
+  }
+
+  TextPainter _buildTP(String text, double size, Color color, {bool bold = false, bool center = false}) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: TextStyle(
+        fontFamily: 'SpaceMono', fontSize: size, color: color,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      )),
+      textDirection: TextDirection.ltr,
+      textAlign: center ? TextAlign.center : TextAlign.left,
+    )..layout();
+    return tp;
+  }
+
+  double _measureText(String text, double size, {bool bold = false}) {
+    return _buildTP(text, size, Colors.white, bold: bold).width;
+  }
+
+  void _drawSmallText(Canvas canvas, String text, Offset pos, Color color,
+      {double size = 7.5, bool bold = false, bool center = false, double? width}) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: TextStyle(
+        fontFamily: 'SpaceMono', fontSize: size, color: color,
+        fontWeight: bold ? FontWeight.bold : FontWeight.normal,
+      )),
+      textDirection: TextDirection.ltr,
+      textAlign: center ? TextAlign.center : TextAlign.left,
+    );
+    if (width != null) tp.layout(minWidth: width, maxWidth: width);
+    else tp.layout();
+    tp.paint(canvas, pos);
+  }
+
+  @override
+  bool shouldRepaint(CandleChartPainter old) => true;
 }
