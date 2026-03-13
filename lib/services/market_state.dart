@@ -8,16 +8,16 @@ import '../models/models.dart';
 
 const int kDerivAppId = 129691;
 
-// ── Hybrid Signal Situation
+// -- Hybrid Signal Situation
 enum JPSituation {
-  pureWick,      // S1: wick only outside ACC, body inside → 85%
-  bodyRevert,    // S2: body outside but N+1 reverts inside → 70%
-  breakout,      // S3: body outside + continues → SKIP 20%
-  fvgRetest,     // S4: Fair Value Gap → wait retest → 65%
-  ifvg,          // S5: Inverse FVG → trap → 80%
+  pureWick,      // S1: wick only outside ACC, body inside -> 85%
+  bodyRevert,    // S2: body outside but N+1 reverts inside -> 70%
+  breakout,      // S3: body outside + continues -> SKIP 20%
+  fvgRetest,     // S4: Fair Value Gap -> wait retest -> 65%
+  ifvg,          // S5: Inverse FVG -> trap -> 80%
 }
 
-// ── Signal AMD (hybrid)
+// -- Signal AMD (hybrid)
 class JPSignal {
   final int idx;
   final String type;        // 'BUY' or 'SELL'
@@ -46,7 +46,7 @@ class JPSignal {
   });
 }
 
-// ── Phase AMD détectée
+// -- Phase AMD d?tect?e
 class JPPhase {
   final AccZone acc;
   final int manipIdx;
@@ -55,7 +55,7 @@ class JPPhase {
   const JPPhase({required this.acc, required this.manipIdx, required this.manipDir, required this.distDir});
 }
 
-// ── Accumulation zone
+// -- Accumulation zone
 class AccZone {
   final int startIdx;
   final int endIdx;
@@ -67,33 +67,33 @@ class AccZone {
 }
 
 class MarketState extends ChangeNotifier {
-  // ── Symbol
+  // -- Symbol
   String sym = 'frxXAUUSD';
   String sname = 'Gold / US Dollar';
   int tf = 900;
 
-  // ── Prices
+  // -- Prices
   double? price;
   double? prevPrice;
   double? open0;
   double? bidPrice;
   double? askPrice;
 
-  // ── Candles
+  // -- Candles
   List<Candle> candles = [];
 
-  // ── View
+  // -- View
   double zoom = 60;
   double offset = 0;
   double yOffset = 0;
 
-  // ── WS
+  // -- WS
   WebSocketChannel? _ws;
   bool wsOk = false;
   bool _reconnecting = false;
   int _rid = 1;
 
-  // ── Replay
+  // -- Replay
   bool isReplay = false;
   List<Candle> replayAll = [];
   List<_ReplayTick> replayTicks = [];
@@ -103,16 +103,16 @@ class MarketState extends ChangeNotifier {
   Timer? replayTimer;
   int replaySpeed = 400;
 
-  // ── Trades
+  // -- Trades
   List<Trade> trades = [];
 
-  // ── JOROpredict (GainzAlpha v3 AMD Engine — exact copy from HTML)
+  // -- JOROpredict (GainzAlpha v3 AMD Engine ? exact copy from HTML)
   bool joropredictActive = false;
   List<JPSignal> jpSignals = [];      // gainzSignals
   List<JPPhase>  jpPhases  = [];      // _gainzPhases
   JPSignal? activeJPSig;              // _activeGainzSig
 
-  // ── Settings
+  // -- Settings
   bool trailingStop = false;
   double trailingDist = 0.5;
   bool jpAutoTPSL = false;
@@ -124,9 +124,9 @@ class MarketState extends ChangeNotifier {
 
   MarketState() { _loadPrefs(); }
 
-  // ─────────────────────────────────────────────
-  // ── Candles helpers
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Candles helpers
+  // --------------------------------------------?
   List<Candle> getCandles() {
     if (!isReplay) return candles;
     if (replayTicks.isEmpty) {
@@ -150,7 +150,7 @@ class MarketState extends ChangeNotifier {
     return [...done, liveCand];
   }
 
-  // ── ATR(10) — exact copy from HTML _calcATRForCandles
+  // -- ATR(10) ? exact copy from HTML _calcATRForCandles
   double calcATR({int period = 10}) {
     final c = getCandles();
     if (c.length < 2) return 0;
@@ -180,9 +180,9 @@ class MarketState extends ChangeNotifier {
     return (s: s, e: e, count: e - s + 1);
   }
 
-  // ─────────────────────────────────────────────
-  // ── WebSocket
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- WebSocket
+  // --------------------------------------------?
   void connect() {
     if (isReplay) return;
     _ws?.sink.close();
@@ -294,9 +294,9 @@ class MarketState extends ChangeNotifier {
     }
   }
 
-  // ─────────────────────────────────────────────
-  // ── Zoom / Pan
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Zoom / Pan
+  // --------------------------------------------?
   void zoomAround(double factor, double pivotScreenFraction) {
     final c = getCandles();
     if (c.isEmpty) return;
@@ -331,9 +331,9 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─────────────────────────────────────────────
-  // ── Replay
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Replay
+  // --------------------------------------------?
   void switchToReplay() {
     isReplay = true; _stopReplay();
     replayAll.clear(); replayTicks.clear();
@@ -378,7 +378,7 @@ class MarketState extends ChangeNotifier {
     await comp.future;
   }
 
-  // ── Generate ticks from candles (exact copy from HTML generateTicksFromCandles)
+  // -- Generate ticks from candles (exact copy from HTML generateTicksFromCandles)
   List<_ReplayTick> _generateTicks(List<Candle> candles) {
     final ticks = <_ReplayTick>[];
     final rng   = Random();
@@ -459,10 +459,10 @@ class MarketState extends ChangeNotifier {
     return DateTime.fromMillisecondsSinceEpoch(replayTicks[replayTickIdx].time * 1000);
   }
 
-  // ─────────────────────────────────────────────
-  // ── JOROpredict — AMD Engine
+  // --------------------------------------------?
+  // -- JOROpredict ? AMD Engine
   //    EXACT COPY from HTML computeGainzSignals()
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
   void toggleJOROpredict() {
     joropredictActive = !joropredictActive;
     jpSignals.clear(); jpPhases.clear(); activeJPSig = null;
@@ -479,7 +479,7 @@ class MarketState extends ChangeNotifier {
     if (c.length < 20) return;
     final n = c.length;
 
-    // ── ATR(10) — exact copy from HTML atr(i)
+    // -- ATR(10) ? exact copy from HTML atr(i)
     double atrAt(int i) {
       const per = 10;
       final from = max(1, i - per + 1);
@@ -492,33 +492,33 @@ class MarketState extends ChangeNotifier {
       return ct > 0 ? s / ct : (c[i].high - c[i].low == 0 ? 1 : c[i].high - c[i].low);
     }
 
-    // ── Detect ACCUMULATION zones — exact copy from HTML detectAccumulation()
-    // ── detectAccumulation — EXACT COPY from HTML computeGainzSignals > detectAccumulation(5)
+    // -- Detect ACCUMULATION zones ? exact copy from HTML detectAccumulation()
+    // -- detectAccumulation ? EXACT COPY from HTML computeGainzSignals > detectAccumulation(5)
     List<AccZone> detectAccumulation({int minBars = 4, int maxBars = 30}) {
       final results = <AccZone>[];
       for (int i = 5; i < n - minBars; i++) {
         final a = atrAt(i);
-        // Mesure range sur fenêtre glissante — exact copy from HTML
+        // Mesure range sur fen?tre glissante ? exact copy from HTML
         for (int len = minBars; len <= min(maxBars, n - i - 2); len++) {
           final window = c.sublist(i, i + len);
           final hi = window.map((x) => x.high).reduce(max);
           final lo = window.map((x) => x.low).reduce(min);
           final rangeSize = hi - lo;
-          // Range étroit = accumulation si < 1.5 ATR — exact copy
+          // Range ?troit = accumulation si < 1.5 ATR ? exact copy
           if (rangeSize < a * 1.5) {
-            // Vérifier que la barre suivante n'est pas encore dans le range
+            // V?rifier que la barre suivante n'est pas encore dans le range
             if (i + len < n) {
               results.add(AccZone(
                 startIdx: i, endIdx: i + len - 1,
                 high: hi, low: lo, mid: (hi + lo) / 2, atr: a,
               ));
             }
-            break; // prendre la fenêtre la plus longue possible — exact copy
+            break; // prendre la fenetre la plus longue possible - exact copy
           }
-          // rangeSize >= a*1.5 → loop continues (exact copy: no break here)
+          // rangeSize >= a*1.5 -> loop continues (exact copy: no break here)
         }
       }
-      // Dédupliquer: garder seulement zones non-chevauchantes
+      // D?dupliquer: garder seulement zones non-chevauchantes
       final deduped = <AccZone>[];
       for (final z in results) {
         final overlap = deduped.any((d) => z.startIdx <= d.endIdx && z.endIdx >= d.startIdx);
@@ -533,7 +533,7 @@ class MarketState extends ChangeNotifier {
       final endIdx = acc.endIdx;
       if (endIdx + 1 >= n) continue;
 
-      // ── Phase 2: chercher MANIPULATION juste après la zone — exact copy from HTML
+      // -- Phase 2: chercher MANIPULATION juste apr?s la zone ? exact copy from HTML
       int    manipIdx = -1;
       String manipDir = '';
 
@@ -545,11 +545,11 @@ class MarketState extends ChangeNotifier {
         final returnUp  = cv.close < acc.high + acc.atr * 0.2;
         final returnDown= cv.close > acc.low  - acc.atr * 0.2;
 
-        // Fakeout UP: perce le haut mais close revient → manipulation bearish
+        // Fakeout UP: perce le haut mais close revient -> manipulation bearish
         if (breakUp && returnUp && cv.close < cv.open) {
           manipIdx = j; manipDir = 'up'; break;
         }
-        // Fakeout DOWN: perce le bas mais close revient → manipulation bullish
+        // Fakeout DOWN: perce le bas mais close revient -> manipulation bullish
         if (breakDown && returnDown && cv.close > cv.open) {
           manipIdx = j; manipDir = 'down'; break;
         }
@@ -557,7 +557,7 @@ class MarketState extends ChangeNotifier {
 
       if (manipIdx == -1) continue;
 
-      // ── Fakeout UP  → SELL / Fakeout DOWN → BUY
+      // -- Fakeout UP  -> SELL / Fakeout DOWN -> BUY
       final sigType  = manipDir == 'up' ? 'SELL' : 'BUY';
       final sigPrice = manipDir == 'up'
           ? c[manipIdx].high
@@ -566,22 +566,22 @@ class MarketState extends ChangeNotifier {
       final mc = c[manipIdx];
       final isBullManip = mc.close > mc.open;
 
-      // ══════════════════════════════════════════════════
-      // ── HYBRID SITUATION DETECTION
-      // ══════════════════════════════════════════════════
+      // ==================================================
+      // -- HYBRID SITUATION DETECTION
+      // ==================================================
 
-      // ── S1: Pure Wick — body stays inside ACC, only wick pierces
+      // -- S1: Pure Wick ? body stays inside ACC, only wick pierces
       // Body = entre open et close
       final bodyTop    = max(mc.open, mc.close);
       final bodyBot    = min(mc.open, mc.close);
       final bodyInside = manipDir == 'up'
-          ? bodyTop <= acc.high + acc.atr * 0.1   // body reste dans/près zone haute
-          : bodyBot >= acc.low  - acc.atr * 0.1;  // body reste dans/près zone basse
+          ? bodyTop <= acc.high + acc.atr * 0.1   // body reste dans/pres zone haute
+          : bodyBot >= acc.low  - acc.atr * 0.1;  // body reste dans/pres zone basse
       final wickPierces = manipDir == 'up'
           ? mc.high > acc.high + acc.atr * 0.15
           : mc.low  < acc.low  - acc.atr * 0.15;
 
-      // ── S5: Inverse FVG (IFVG) — gap between C-1 and C+1 inversé
+      // -- S5: Inverse FVG (IFVG) ? gap between C-1 and C+1 invers?
       // C[i-1].low > C[i+1].high (bullish IFVG) ou C[i-1].high < C[i+1].low (bearish IFVG)
       bool hasIFVG = false;
       double? ifvgLow, ifvgHigh;
@@ -601,7 +601,7 @@ class MarketState extends ChangeNotifier {
         }
       }
 
-      // ── S4: Fair Value Gap (FVG) — gap DANS la direction du breakout
+      // -- S4: Fair Value Gap (FVG) ? gap DANS la direction du breakout
       // = distribution forte, entry seulement au retest du gap
       bool hasFVG = false;
       double? fvgLow, fvgHigh;
@@ -609,19 +609,19 @@ class MarketState extends ChangeNotifier {
         final prev = c[manipIdx - 1];
         final next = c[manipIdx + 1];
         if (sigType == 'SELL' && prev.high < next.low) {
-          // FVG bearish: gap up = momentum SELL fort → wait retest
+          // FVG bearish: gap up = momentum SELL fort -> wait retest
           hasFVG = true;
           fvgLow  = prev.high;
           fvgHigh = next.low;
         } else if (sigType == 'BUY' && prev.low > next.high) {
-          // FVG bullish: gap down = momentum BUY fort → wait retest
+          // FVG bullish: gap down = momentum BUY fort -> wait retest
           hasFVG = true;
           fvgLow  = next.high;
           fvgHigh = prev.low;
         }
       }
 
-      // ── S3 / S2: Body outside check + N+1 confirmation
+      // -- S3 / S2: Body outside check + N+1 confirmation
       bool bodyOutside = false;
       bool nextReverts = false;
       if (manipDir == 'up') {
@@ -638,7 +638,7 @@ class MarketState extends ChangeNotifier {
         }
       }
 
-      // ── Determine situation + confidence + entry
+      // -- Determine situation + confidence + entry
       JPSituation situation;
       int confidence;
       String entryTiming;
@@ -646,38 +646,38 @@ class MarketState extends ChangeNotifier {
       String filterNote = '';
 
       if (hasIFVG) {
-        // S5 — strongest manipulation trap
+        // S5 ? strongest manipulation trap
         situation   = JPSituation.ifvg;
         confidence  = 80;
         entryTiming = 'aggressive';
         confirmed   = true;
       } else if (bodyInside && wickPierces) {
-        // S1 — classic pure wick stop hunt
+        // S1 ? classic pure wick stop hunt
         situation   = JPSituation.pureWick;
         confidence  = 85;
         entryTiming = 'aggressive';
         confirmed   = true;
       } else if (bodyOutside && nextReverts) {
-        // S2 — body outside but N+1 pulls back inside
+        // S2 ? body outside but N+1 pulls back inside
         situation   = JPSituation.bodyRevert;
         confidence  = 70;
         entryTiming = 'conservative';
         confirmed   = true;
       } else if (hasFVG) {
-        // S4 — FVG: wait for retest before entry
+        // S4 ? FVG: wait for retest before entry
         situation   = JPSituation.fvgRetest;
         confidence  = 65;
         entryTiming = 'wait_retest';
         confirmed   = true; // valid but needs patience
       } else if (bodyOutside && !nextReverts) {
-        // S3 — breakout continuation: SKIP
+        // S3 ? breakout continuation: SKIP
         situation   = JPSituation.breakout;
         confidence  = 20;
         entryTiming = 'skip';
         confirmed   = false;
-        filterNote  = 'Breakout continuation — distribution, not manipulation';
+        filterNote  = 'Breakout continuation - distribution, not manipulation';
       } else {
-        // Fallback — treat as S1 with lower confidence
+        // Fallback ? treat as S1 with lower confidence
         situation   = JPSituation.pureWick;
         confidence  = 60;
         entryTiming = 'aggressive';
@@ -708,7 +708,7 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── EMA — exact copy from HTML calcEMA()
+  // -- EMA ? exact copy from HTML calcEMA()
   static List<double?> calcEMA(List<double> data, int period) {
     final k   = 2 / (period + 1);
     final ema = <double?>[];
@@ -725,7 +725,7 @@ class MarketState extends ChangeNotifier {
     return ema;
   }
 
-  // ── RSI — exact copy from HTML calcRSI()
+  // -- RSI ? exact copy from HTML calcRSI()
   static List<double?> calcRSI(List<double> closes, int period) {
     final rsi = List<double?>.filled(period, null);
     double gains = 0, losses = 0;
@@ -746,9 +746,9 @@ class MarketState extends ChangeNotifier {
     return rsi;
   }
 
-  // ─────────────────────────────────────────────
-  // ── Trailing stop — exact copy from HTML runTrailingStop()
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Trailing stop ? exact copy from HTML runTrailingStop()
+  // --------------------------------------------?
   void _runTrailingStop(double price) {
     if (!trailingStop) return;
     bool changed = false;
@@ -779,16 +779,16 @@ class MarketState extends ChangeNotifier {
     if (changed) { saveTrades(); notifyListeners(); }
   }
 
-  // ─────────────────────────────────────────────
-  // ── Trade management
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Trade management
+  // --------------------------------------------?
   void addTrade(Trade t)    { trades.insert(0, t); saveTrades(); notifyListeners(); }
   void removeTrade(int id)  { trades.removeWhere((t) => t.id == id); saveTrades(); notifyListeners(); }
   void clearAllTrades()     { trades.clear(); saveTrades(); notifyListeners(); }
 
-  // ─────────────────────────────────────────────
-  // ── Persistence
-  // ─────────────────────────────────────────────
+  // --------------------------------------------?
+  // -- Persistence
+  // --------------------------------------------?
   Future<void> _loadPrefs() async {
     final p = await SharedPreferences.getInstance();
     groqKey       = p.getString('groqKey')   ?? '';
@@ -823,9 +823,9 @@ class MarketState extends ChangeNotifier {
     await p.setBool('jpAlarm',      jpAlarm);
   }
 
-  // ══════════════════════════════════════════════
-  // ── SUPPLY & DEMAND ENGINE
-  // ══════════════════════════════════════════════
+  // ==============================================
+  // -- SUPPLY & DEMAND ENGINE
+  // ==============================================
 
   void toggleSD() {
     sdActive = !sdActive;
@@ -837,7 +837,7 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Step 1: Detect Supply & Demand zones from candles
+  // -- Step 1: Detect Supply & Demand zones from candles
   // Supply zone = strong bearish origin candle (large body down, large move after)
   // Demand zone = strong bullish origin candle (large body up, large move after)
   void detectSDZones() {
@@ -863,7 +863,7 @@ class MarketState extends ChangeNotifier {
       final body = (cv.close - cv.open).abs();
       final range = cv.high - cv.low;
 
-      // Strong candle = body > 60% of range AND body > 0.8× ATR
+      // Strong candle = body > 60% of range AND body > 0.8? ATR
       final isStrong = body > range * 0.6 && body > atrVal * 0.8;
       if (!isStrong) continue;
 
@@ -871,7 +871,7 @@ class MarketState extends ChangeNotifier {
       final next1 = c[i + 1];
       final next2 = c[i + 2];
 
-      // ── SUPPLY zone (bearish origin)
+      // -- SUPPLY zone (bearish origin)
       if (cv.close < cv.open) {
         final momentum = (c[i].close - next2.low).abs();
         if (momentum < atrVal * 0.5) continue; // not enough move
@@ -897,7 +897,7 @@ class MarketState extends ChangeNotifier {
         ));
       }
 
-      // ── DEMAND zone (bullish origin)
+      // -- DEMAND zone (bullish origin)
       if (cv.close > cv.open) {
         final momentum = (next2.high - c[i].close).abs();
         if (momentum < atrVal * 0.5) continue;
@@ -924,7 +924,7 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ── Step 2 & 3: Check price entering zone + LTF confirmation
+  // -- Step 2 & 3: Check price entering zone + LTF confirmation
   void _checkSDZones(double currentPrice) {
     if (!sdActive || sdZones.isEmpty) return;
     final c   = getCandles();
@@ -937,13 +937,13 @@ class MarketState extends ChangeNotifier {
           zone.status == SDZoneStatus.hitSL ||
           zone.status == SDZoneStatus.expired) continue;
 
-      // ── Step 2: Price enters zone
+      // -- Step 2: Price enters zone
       if (zone.status == SDZoneStatus.waiting && zone.priceInZone(currentPrice)) {
         zone.status = SDZoneStatus.entered;
         changed = true;
       }
 
-      // ── LTF confirmation (simulated on HTF candles)
+      // -- LTF confirmation (simulated on HTF candles)
       // Confirmation = rejection candle inside zone:
       // Demand: bullish pin bar or engulfing while price in zone
       // Supply: bearish pin bar or engulfing while price in zone
@@ -966,7 +966,7 @@ class MarketState extends ChangeNotifier {
             zone.ltfConfirmed  = true;
             zone.ltfConfirmIdx = c.length - 1;
 
-            // ── Step 3: Set entry / SL / TP
+            // -- Step 3: Set entry / SL / TP
             if (zone.isBuy) {
               zone.entry = zone.zoneLow + zone.zoneSize * 0.5; // mid zone
               zone.sl    = zone.zoneLow - atr * 0.3;           // below zone
@@ -982,7 +982,7 @@ class MarketState extends ChangeNotifier {
         }
       }
 
-      // ── Check TP / SL hit
+      // -- Check TP / SL hit
       if (zone.status == SDZoneStatus.confirmed &&
           zone.entry != null && zone.sl != null && zone.tp != null) {
         bool hitTP = false, hitSL = false;
@@ -1000,16 +1000,16 @@ class MarketState extends ChangeNotifier {
           if (hitTP) sdWins++; else sdLosses++;
           // Prepare win rate message for JORO
           sdLastResultMsg =
-            '${hitTP ? "✅ TP HIT" : "❌ SL HIT"} — ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}
+            '${hitTP ? "[OK] TP HIT" : "[X] SL HIT"} - ${zone.isBuy ? "BUY" : "SELL"} zone @ ${fp(zone.entry)}
 '
-            '📊 Win Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
+            '[stats] Win Rate: ${sdWinRate.toStringAsFixed(1)}% (${sdWins}W / ${sdLosses}L)';
           changed = true;
           _saveSDStats();
         }
       }
     }
 
-    // Remove expired zones (hit TP or SL — keep for display briefly)
+    // Remove expired zones (hit TP or SL ? keep for display briefly)
     if (changed) notifyListeners();
   }
 
