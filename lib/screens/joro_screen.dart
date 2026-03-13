@@ -120,7 +120,7 @@ class _JoroScreenState extends State<JoroScreen> {
         : 'N/A';
     final curPrice = s.isReplay && candles.isNotEmpty ? candles.last.close : s.price;
     final jpInfo = s.sdActive && s.sdZones.isNotEmpty
-        ? '\nJOROpredict signals (last 3): ${s.sdZones.takeLast(3).map((sg) => '${sg.type}@${fp(sg.price)}').join(', ')}'
+        ? '\nS&D zones confirmed: ${s.sdZones.where((z) => z.status.name == "confirmed").length}'
         : '';
 
     return '''=== MARKET DATA (${s.isReplay ? 'Replay' : 'Real-time Deriv'}) ===
