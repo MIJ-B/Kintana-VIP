@@ -6,6 +6,7 @@ import '../services/market_state.dart';
 import '../models/models.dart';
 import '../theme/kintana_theme.dart';
 import '../widgets/candle_chart_painter.dart';
+import '../widgets/ict_chart_painter.dart';
 
 class ChartScreen extends StatefulWidget {
   const ChartScreen({super.key});
@@ -37,17 +38,7 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
   }
 
   void _onAlarmStart() {
-    // Trigger vibration via HapticFeedback (works on mobile)
-    // Repeat vibration while alarm is ringing
-    _vibrateLoop();
-  }
-
-  void _vibrateLoop() async {
-    final s = context.read<MarketState>();
-    if (!s.alarmRinging) return;
     HapticFeedback.heavyImpact();
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (mounted) _vibrateLoop();
   }
 
   String _ltfLabel(int ltfSeconds) {
@@ -195,8 +186,65 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
             ),
           ),
 
+          const SizedBox(width: 5),
+          // JORO S&D button
+          GestureDetector(
+            onTap: () {
+              s.toggleJoro();
+              HapticFeedback.lightImpact();
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                color: s.joroActive
+                    ? KintanaTheme.purple.withOpacity(0.20)
+                    : KintanaTheme.card,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(
+                  color: s.joroActive
+                      ? KintanaTheme.purple.withOpacity(0.8)
+                      : KintanaTheme.b2,
+                ),
+                boxShadow: s.joroActive
+                    ? [BoxShadow(color: KintanaTheme.purple.withOpacity(0.3), blurRadius: 8)]
+                    : null,
+              ),
+              child: Row(
+                children: [
+                  Text('⚡', style: TextStyle(fontSize: 10,
+                      color: s.joroActive ? const Color(0xFFC4AAFF) : KintanaTheme.t3)),
+                  const SizedBox(width: 4),
+                  Text(
+                    'JORO',
+                    style: KintanaTheme.mono(
+                      size: 9,
+                      color: s.joroActive ? const Color(0xFFC4AAFF) : KintanaTheme.t3,
+                      weight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  if (s.joroActive && s.joro.signals.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: KintanaTheme.purple.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        '${s.joro.signals.length}',
+                        style: KintanaTheme.mono(size: 7.5,
+                            color: const Color(0xFFC4AAFF), weight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+
           const Spacer(),
-          // Replay mode toggle
           GestureDetector(
             onTap: () {
               setState(() => _showReplayBar = !_showReplayBar);
@@ -396,7 +444,19 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
             GestureDetector(
               onTapDown: (d) {
                 final box = context.findRenderObject() as RenderBox?;
-                // Simple seek on tap
+                if (box == null) return;
+                final localX = d.localPosition.dx;
+                const barWidth = 100.0;
+                final pct = (localX / barWidth).clamp(0.0, 1.0);
+                s.replaySeek(pct);
+              },
+              onHorizontalDragUpdate: (d) {
+                final box = context.findRenderObject() as RenderBox?;
+                if (box == null) return;
+                final localX = d.localPosition.dx;
+                const barWidth = 100.0;
+                final pct = (localX / barWidth).clamp(0.0, 1.0);
+                s.replaySeek(pct);
               },
               child: Container(
                 width: 100,
@@ -537,6 +597,24 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
           ),
         ),
 
+        // ── JORO S&D overlay
+        if (s.joroActive)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: ICTChartPainter(
+                  state: s,
+                  candles: candles,
+                  zoom: s.zoom,
+                  offset: s.offset,
+                  yOffset: s.yOffset,
+                  mouseX: _mouseX,
+                  mouseY: _mouseY,
+                ),
+              ),
+            ),
+          ),
+
         // ?? OHLC overlay
         Positioned(
           top: 8,
@@ -569,6 +647,50 @@ class _ChartScreenState extends State<ChartScreen> with TickerProviderStateMixin
                         color: const Color(0xFFFFD740), letterSpacing: 0.8),
                   ),
                 ),
+              ),
+            ),
+          ),
+
+        // ── JORO S&D status badge
+        if (s.joroActive)
+          Positioned(
+            top: s.sdActive ? 30 : 8,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: AnimatedBuilder(
+                animation: _pulseCtrl,
+                builder: (_, __) {
+                  final sig   = s.joro.activeSignal;
+                  final stage = s.joro.entryZone?.stage ?? 0;
+                  final labelParts = <String>[
+                    '⚡ JORO S&D',
+                    if (sig != null)
+                      '${sig.isBuy ? "▲ BUY" : "▼ SELL"} · ${sig.pattern.name.toUpperCase()} · ${sig.confidence}%${sig.isFresh ? " ✦" : ""}'
+                    else
+                      '${s.joro.zones.where((z) => !z.invalidated).length} zones · ${s.joro.signals.length} signals',
+                    if (s.joroWins + s.joroLosses > 0)
+                      'WR: ${s.joroWinRate.toStringAsFixed(0)}% (${s.joroWins}W/${s.joroLosses}L)',
+                  ];
+                  final isConfirmed = stage == 100;
+                  final col = isConfirmed ? KintanaTheme.green : KintanaTheme.purple;
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: col.withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: col.withOpacity(0.3 + 0.3 * _pulseCtrl.value),
+                      ),
+                    ),
+                    child: Text(
+                      labelParts.join('  |  '),
+                      style: KintanaTheme.mono(size: 8.5,
+                          color: isConfirmed ? KintanaTheme.green : const Color(0xFFC4AAFF),
+                          letterSpacing: 0.5),
+                    ),
+                  );
+                },
               ),
             ),
           ),
