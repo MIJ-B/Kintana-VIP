@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/models.dart';
+import '../models/ict_models.dart';
+import 'gainz_engine.dart';
 
 const int kDerivAppId = 129691;
 
@@ -50,6 +52,8 @@ class MarketState extends ChangeNotifier {
   WebSocketChannel? _ws;
   bool wsOk       = false;
   bool _reconnecting = false;
+  int  _reconnectAttempts = 0;
+  static const int _maxReconnectDelay = 60;
   int  _rid = 1;
 
   // -- Replay
@@ -71,7 +75,7 @@ class MarketState extends ChangeNotifier {
   String groqKey   = '';
   String groqModel = 'llama-3.3-70b-versatile';
 
-  // -- Supply & Demand
+  // -- Supply & Demand (legacy)
   bool sdActive = false;
   List<SDZone> sdZones = [];
   int _sdIdCounter = 1;
@@ -81,9 +85,20 @@ class MarketState extends ChangeNotifier {
       (sdWins + sdLosses) == 0 ? 0 : sdWins / (sdWins + sdLosses) * 100;
   String? sdLastResultMsg;
 
+  // -- JORO S&D Engine
+  bool joroActive  = false;
+  JOROAnalysis joro = JOROAnalysis.empty();
+  int joroWins     = 0;
+  int joroLosses   = 0;
+  double get joroWinRate =>
+      (joroWins + joroLosses) == 0 ? 0 : joroWins / (joroWins + joroLosses) * 100;
+
   // -- Alarm state
-  bool alarmRinging  = false;  // true = alarm is sounding
-  String alarmReason = '';     // reason shown on stop button
+  bool alarmRinging  = false;
+  String alarmReason = '';
+  Timer? _alarmTimer;
+  int _alarmPulseCount = 0;
+  static const int _maxAlarmPulses = 30; // auto-stop after 30 pulses (~18s)
 
   // Callback injected by chart_screen to trigger audio + vibration
   VoidCallback? onAlarmStart;
@@ -165,6 +180,7 @@ class MarketState extends ChangeNotifier {
     _send({'ticks_history': sym, 'end': 'latest', 'count': 1,
            'style': 'candles', 'granularity': tf, 'subscribe': 1});
     wsOk = true;
+    _reconnectAttempts = 0;
     _connectLTF();
     notifyListeners();
   }
@@ -180,8 +196,14 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
     if (!isReplay && !_reconnecting) {
       _reconnecting = true;
-      Future.delayed(const Duration(seconds: 3), () {
-        _reconnecting = false; connect();
+      _reconnectAttempts++;
+      final delaySec = min(
+        _maxReconnectDelay,
+        3 * (1 << (_reconnectAttempts - 1).clamp(0, 5)),
+      );
+      Future.delayed(Duration(seconds: delaySec), () {
+        _reconnecting = false;
+        connect();
       });
     }
   }
@@ -204,6 +226,7 @@ class MarketState extends ChangeNotifier {
       _runTrailingStop(price!);
       _checkPendingSignals(price!);
       _checkSDZones(price!);
+      if (joroActive) runJoro();
       notifyListeners();
     }
     if (d['candles'] != null) {
@@ -214,6 +237,7 @@ class MarketState extends ChangeNotifier {
       zoom   = min(60, candles.length.toDouble());
       offset = max(0, candles.length - zoom.round()).toDouble();
       if (sdActive) detectSDZones();
+      if (joroActive) runJoro();
       notifyListeners();
     }
     if (d['ohlc'] != null) {
@@ -230,6 +254,7 @@ class MarketState extends ChangeNotifier {
       if (idx >= 0) candles[idx] = cn;
       else { candles.add(cn); if (candles.length > 500) candles.removeAt(0); }
       if (sdActive) detectSDZones();
+      if (joroActive) runJoro();
       notifyListeners();
     }
   }
@@ -593,6 +618,65 @@ class MarketState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ============================================================
+  // -- JORO S&D ENGINE
+  // ============================================================
+
+  void toggleJoro() {
+    joroActive = !joroActive;
+    if (joroActive) {
+      runJoro();
+    } else {
+      joro = JOROAnalysis.empty();
+      alarmRinging = false;
+    }
+    notifyListeners();
+  }
+
+  void runJoro() {
+    if (!joroActive) return;
+    final c = getCandles();
+    if (c.length < 20) return;
+    final prevId = joro.activeSignal?.id;
+    joro = GainzEngine.compute(c);
+    // Alarm si nouveau signal confirmé (stage 100)
+    if (joro.activeSignal != null &&
+        joro.activeSignal!.id != prevId &&
+        joro.activeSignal!.hitState == JOROHitState.none &&
+        joro.entryZone?.stage == 100) {
+      final sig = joro.activeSignal!;
+      _triggerAlarm(
+        '${sig.isBuy ? "BUY" : "SELL"} ${sig.pattern.name.toUpperCase()} confirmed @ ${fp(sig.price)}'
+      );
+    }
+    // Track win/loss
+    if (joro.activeSignal != null) {
+      final sig = joro.activeSignal!;
+      if (sig.hitState == JOROHitState.tp) {
+        joroWins++;
+        sdLastResultMsg = '🏆 TP HIT — ${sig.isBuy ? "BUY" : "SELL"} ${sig.pattern.name.toUpperCase()}\nWin Rate: ${joroWinRate.toStringAsFixed(1)}% (${joroWins}W/${joroLosses}L)';
+        _saveJoroStats();
+      } else if (sig.hitState == JOROHitState.sl) {
+        joroLosses++;
+        sdLastResultMsg = '🛑 SL HIT — ${sig.isBuy ? "BUY" : "SELL"} ${sig.pattern.name.toUpperCase()}\nWin Rate: ${joroWinRate.toStringAsFixed(1)}% (${joroWins}W/${joroLosses}L)';
+        _saveJoroStats();
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> _saveJoroStats() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt('joroWins',   joroWins);
+    await p.setInt('joroLosses', joroLosses);
+  }
+
+  Future<void> _loadGainzStats() async {
+    final p = await SharedPreferences.getInstance();
+    joroWins   = p.getInt('joroWins')   ?? 0;
+    joroLosses = p.getInt('joroLosses') ?? 0;
+  }
+
   // -- Step 1: Detect Supply & Demand zones from HTF candles
   void detectSDZones() {
     sdZones.clear();
@@ -603,24 +687,33 @@ class MarketState extends ChangeNotifier {
     double atrVal = calcATR(src: c);
     if (atrVal == 0) atrVal = c.last.high - c.last.low;
 
-    for (int i = 1; i < n - 1; i++) {
+    for (int i = 2; i < n - 3; i++) {
       final cv    = c[i];
+      final prev  = c[i - 1];
       final body  = (cv.close - cv.open).abs();
       final range = cv.high - cv.low;
       if (range == 0) continue;
 
-      // Relaxed: strong if body dominant OR significant size
-      final isStrong = (body > range * 0.45) || (body > atrVal * 0.5);
+      // Stricter: body must dominate AND size must be significant
+      final isStrong = (body > range * 0.60) && (body > atrVal * 0.5);
       if (!isStrong) continue;
 
+      final next1 = c[i + 1];
       final next2 = c[i + 2];
 
       // -- SUPPLY zone (bearish origin)
       if (cv.close < cv.open) {
-        final momentum = (cv.close - next2.low).abs();
-        if (momentum < atrVal * 0.2) continue;
+        // Must be preceded by up-move (manipulation context)
+        final prevMoveUp = prev.close > prev.open || c[i - 2].close < cv.open;
+        if (!prevMoveUp) continue;
+        // Strong momentum after: next candles should continue bearish
+        final momentum = (cv.open - next2.low);
+        if (momentum < atrVal * 0.4) continue;
+        // Avoid already-mitigated zones (price came back through zone)
         final zHigh = max(cv.open, cv.close);
         final zLow  = min(cv.open, cv.close);
+        final alreadyMitigated = c.sublist(i + 1).any((cc) => cc.high >= zHigh);
+        if (alreadyMitigated) continue;
         sdZones.add(SDZone(
           id: _sdIdCounter++, type: SDZoneType.supply,
           zoneHigh: zHigh, zoneLow: zLow,
@@ -630,10 +723,17 @@ class MarketState extends ChangeNotifier {
 
       // -- DEMAND zone (bullish origin)
       if (cv.close > cv.open) {
-        final momentum = (next2.high - cv.close).abs();
-        if (momentum < atrVal * 0.2) continue;
+        // Must be preceded by down-move
+        final prevMoveDown = prev.close < prev.open || c[i - 2].close > cv.open;
+        if (!prevMoveDown) continue;
+        // Strong momentum after: next candles should continue bullish
+        final momentum = (next2.high - cv.open);
+        if (momentum < atrVal * 0.4) continue;
+        // Avoid already-mitigated zones
         final zHigh = max(cv.open, cv.close);
         final zLow  = min(cv.open, cv.close);
+        final alreadyMitigated = c.sublist(i + 1).any((cc) => cc.low <= zLow);
+        if (alreadyMitigated) continue;
         sdZones.add(SDZone(
           id: _sdIdCounter++, type: SDZoneType.demand,
           zoneHigh: zHigh, zoneLow: zLow,
@@ -641,9 +741,9 @@ class MarketState extends ChangeNotifier {
         ));
       }
     }
-    // Keep only the 8 most recent zones to avoid clutter
-    if (sdZones.length > 8) {
-      sdZones = sdZones.sublist(sdZones.length - 8);
+    // Keep only the 6 most recent fresh zones
+    if (sdZones.length > 6) {
+      sdZones = sdZones.sublist(sdZones.length - 6);
     }
     notifyListeners();
   }
@@ -749,12 +849,20 @@ class MarketState extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
-  // ============================================================
-  // -- Alarm
-  // ============================================================
   void _triggerAlarm(String reason) {
+    if (alarmRinging) return; // already ringing
     alarmRinging = true;
     alarmReason  = reason;
+    _alarmPulseCount = 0;
+    _alarmTimer?.cancel();
+    // Auto-stop alarm after max pulses to avoid infinite ringing
+    _alarmTimer = Timer.periodic(const Duration(milliseconds: 600), (t) {
+      _alarmPulseCount++;
+      onAlarmStart?.call();
+      if (_alarmPulseCount >= _maxAlarmPulses) {
+        stopAlarm();
+      }
+    });
     onAlarmStart?.call();
     notifyListeners();
   }
@@ -762,6 +870,9 @@ class MarketState extends ChangeNotifier {
   void stopAlarm() {
     alarmRinging = false;
     alarmReason  = '';
+    _alarmTimer?.cancel();
+    _alarmTimer = null;
+    _alarmPulseCount = 0;
     notifyListeners();
   }
 
@@ -779,6 +890,7 @@ class MarketState extends ChangeNotifier {
         .map((j) => Trade.fromJson(j as Map<String, dynamic>))
         .toList();
     await _loadSDStats();
+    await _loadGainzStats();
     connect();
     notifyListeners();
   }
@@ -838,6 +950,7 @@ class MarketState extends ChangeNotifier {
     _ws?.sink.close();
     _ltfWs?.sink.close();
     replayTimer?.cancel();
+    _alarmTimer?.cancel();
     super.dispose();
   }
 }
