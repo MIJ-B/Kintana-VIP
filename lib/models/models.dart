@@ -91,9 +91,21 @@ class Trade {
   }) : date = date ?? DateTime.now();
 
   double? calcFloatPnl(double price) {
-    final mult = lotSize * leverage;
+    // Determine pip value based on symbol type
+    final double pipValue;
+    if (symbol.startsWith('frxXAU') || symbol.startsWith('frxXAG')) {
+      // Commodities: Gold/Silver — fixed pip value
+      pipValue = lotSize * 100;
+    } else if (symbol.startsWith('frx')) {
+      // Forex pairs — standard pip
+      pipValue = lotSize * 10;
+    } else {
+      // Synthetic indices (R_10, R_100, BOOM, CRASH, etc.)
+      // Use contract size relative to entry price
+      pipValue = stake / entry;
+    }
     final diff = direction == 'long' ? price - entry : entry - price;
-    return diff * mult / entry;
+    return diff * pipValue;
   }
 
   Map<String, dynamic> toJson() => {
