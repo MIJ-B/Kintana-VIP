@@ -4,11 +4,11 @@
 // ═══════════════════════════════════════════════════════════════
 
 enum SDPattern { dbr, rbd, dbd, rbr }
-enum SDZoneType { demand, supply }
+enum SDZoneTypeV2 { demand, supply }
 
 class SDZoneV2 {
   final int        id;
-  final SDZoneType type;
+  final SDZoneTypeV2 type;
   final SDPattern  pattern;
   final double     top;
   final double     bottom;
@@ -39,7 +39,7 @@ class SDZoneV2 {
 
   double get mid    => (top + bottom) / 2;
   bool   get isFresh => !tested;
-  bool   get isBuy  => type == SDZoneType.demand;
+  bool   get isBuy  => type == SDZoneTypeV2.demand;
 }
 
 // ── Signal: prix revient dans zone + rejection candle
