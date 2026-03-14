@@ -100,13 +100,13 @@ class GainzEngine {
       if (!bullExit && !bearExit) continue;
 
       // Classer le pattern
-      SDZoneType  zType;
+      SDZoneTypeV2  zType;
       SDPattern   pattern;
       if (bullExit) {
-        zType   = SDZoneType.demand;
+        zType   = SDZoneTypeV2.demand;
         pattern = moveBefore >= 1.5 ? SDPattern.dbr : SDPattern.rbr;
       } else {
-        zType   = SDZoneType.supply;
+        zType   = SDZoneTypeV2.supply;
         pattern = moveBefore >= 1.5 ? SDPattern.rbd : SDPattern.dbd;
       }
 
@@ -121,7 +121,7 @@ class GainzEngine {
       int? retestIdx;
       for (int j = afterIdx + 1; j < n; j++) {
         final c = candles[j];
-        if (zType == SDZoneType.demand) {
+        if (zType == SDZoneTypeV2.demand) {
           if (c.low <= base.high && c.close >= base.low) {
             tested = true; retestIdx ??= j;
           }
