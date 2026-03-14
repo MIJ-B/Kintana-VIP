@@ -11,12 +11,6 @@ import '../services/market_state.dart';
 import '../theme/kintana_theme.dart';
 import 'candle_chart_painter.dart';
 
-String fp(double? v) {
-  if (v == null) return '—';
-  if (v >= 1000) return v.toStringAsFixed(2);
-  if (v >= 1)    return v.toStringAsFixed(4);
-  return v.toStringAsFixed(5);
-}
 
 class ICTChartPainter extends CustomPainter {
   final MarketState state;
